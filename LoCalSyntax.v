@@ -8,54 +8,72 @@ Open Scope string_scope.
 
 Module LoCalSyntax.
 
-(* A first syntax-only draft of the LoCal core language, following the
-   grammar in thesis §2.2 (Formal Language and Grammar). *)
+(* Distinct identifier spaces to avoid mixing unrelated strings. *)
+Inductive tycon : Type := mk_tycon : string -> tycon.
+Inductive datacon : Type := mk_datacon : string -> datacon.
+Inductive fun_var : Type := mk_fun_var : string -> fun_var.
+Inductive term_var : Type := mk_term_var : string -> term_var.
+Inductive loc_var : Type := mk_loc_var : string -> loc_var.
+Inductive region_var : Type := mk_region_var : string -> region_var.
+
+Coercion mk_tycon : string >-> tycon.
+Coercion mk_datacon : string >-> datacon.
+Coercion mk_fun_var : string >-> fun_var.
+Coercion mk_term_var : string >-> term_var.
+Coercion mk_loc_var : string >-> loc_var.
+Coercion mk_region_var : string >-> region_var.
 
 Inductive loc_exp : Type :=
-  | LE_Start : string -> loc_exp
-  | LE_Next : string -> string -> loc_exp
-  | LE_After : string -> string -> string -> loc_exp.
+  | LE_Start : region_var -> loc_exp
+  | LE_Next : loc_var -> region_var -> loc_exp
+  | LE_After : tycon -> loc_var -> region_var -> loc_exp.
 
-Inductive hty : Type :=
-  | HT_Located : string -> string -> string -> hty.
+Inductive ty : Type :=
+  | loc_ty : tycon -> loc_var -> region_var -> ty.
 
 Inductive val : Type :=
-  | v_var : string -> val
-  | v_cloc : string -> nat -> string -> string -> val.
+  | v_var : term_var -> val
+  | v_cloc : region_var -> nat -> loc_var -> region_var -> val.
 
 Inductive pat : Type :=
-  | pat_clause : string -> list (string * hty) -> expr -> pat
+  | pat_clause : datacon -> list (term_var * ty) -> expr -> pat
 with expr : Type :=
   | e_val : val -> expr
-  | e_app : string -> list (string * string) -> list val -> expr
-  | e_datacon : string -> string -> string -> list val -> expr
-  | e_let : string -> hty -> expr -> expr -> expr
-  | e_letloc : string -> string -> loc_exp -> expr -> expr
-  | e_letregion : string -> expr -> expr
+  | e_app : fun_var -> list (loc_var * region_var) -> list val -> expr
+  | e_datacon : datacon -> loc_var -> region_var -> list val -> expr
+  | e_let : term_var -> ty -> expr -> expr -> expr
+  | e_letloc : loc_var -> region_var -> loc_exp -> expr -> expr
+  | e_letregion : region_var -> expr -> expr
   | e_case : val -> list pat -> expr.
 
 Inductive datatype_decl : Type :=
-  | DataDecl : string -> list (string * list string) -> datatype_decl.
+  | DataDecl : tycon -> list (datacon * list tycon) -> datatype_decl.
 
 Inductive fdecl : Type :=
-  | FunDecl : string -> list (string * string) -> list hty -> hty -> list string -> expr -> fdecl.
+  | FunDecl : fun_var
+              -> list (loc_var * region_var)
+              -> list ty
+              -> ty
+              -> list region_var
+              -> expr
+              -> fdecl.
 
 Record program : Type := Program
   { prog_ddecls : list datatype_decl;
     prog_fdecls : list fdecl;
     prog_main : expr }.
 
-Declare Custom Entry local_hty.
+Declare Custom Entry local_ty.
 Declare Custom Entry local_val.
 Declare Custom Entry local_exp.
 Declare Scope local_scope.
 
-Notation "<{{ t }}>" := t (t custom local_hty at level 200).
+Notation "<{{ t }}>" := t (t custom local_ty at level 200).
 Notation "<{ e }>" := e (e custom local_exp at level 200).
 
 Notation "'at' T '@' l '^' r" :=
-  (HT_Located T l r)
-    (in custom local_hty at level 80, T constr, l constr, r constr)
+  (loc_ty T l r)
+    (in custom local_ty at level 80, T constr, l constr, r constr)
     : local_scope.
 
 Notation "'v' x" := (v_var x)
@@ -68,58 +86,37 @@ Notation "'cloc' '(' r ',' i ',' l '^' rg ')'" := (v_cloc r i l rg)
 Notation "'start' r" := (LE_Start r)
   (in custom local_exp at level 10, r constr) : local_scope.
 
-Notation "l '^' r '+1'" := (LE_Next l r)
-  (in custom local_exp at level 40, l constr, r constr) : local_scope.
-
-Notation "'after' T '@' l '^' r" := (LE_After T l r)
-  (in custom local_exp at level 40, T constr, l constr, r constr) : local_scope.
-
-Notation "'letloc' l '^' r '=' le 'in' e" :=
-  (e_letloc l r le e)
-    (in custom local_exp at level 80,
-      l constr, r constr, le custom local_exp, e custom local_exp)
-    : local_scope.
-
-Notation "'letregion' r 'in' e" :=
-  (e_letregion r e)
-    (in custom local_exp at level 80, r constr, e custom local_exp)
-    : local_scope.
-
-Notation "'let' x ':' T '=' e1 'in' e2" :=
-  (e_let x T e1 e2)
-    (in custom local_exp at level 80,
-      x constr, T custom local_hty, e1 custom local_exp, e2 custom local_exp)
-    : local_scope.
-
 Notation "'case' scrut 'of' branches" :=
   (e_case scrut branches)
     (in custom local_exp at level 80, scrut constr, branches constr)
     : local_scope.
 
+(* Parse-safe aliases for let/letloc (infix forms conflict with this grammar). *)
+Notation "'LetLoc(' l ',' r ',' le ',' e ')'" := (e_letloc l r le e)
+  (at level 0, l constr, r constr, le at level 200, e at level 200) : local_scope.
+
+Notation "'Let(' x ',' T ',' e1 ',' e2 ')'" := (e_let x T e1 e2)
+  (at level 0, x constr, T at level 200, e1 at level 200, e2 at level 200) : local_scope.
+
 Open Scope local_scope.
 
-(* Examples mirroring the thesis LoCal snippets (chapter "The Location Calculus"):
-   - building a Node from two Leaf values using start/+1/after,
-   - a simple case over Tree values. *)
-
 Definition ex_tree_alloc : expr :=
-  e_letloc "l" "r" (LE_Start "r")
-    (e_letloc "l_a" "r" (LE_Next "l" "r")
-      (e_let "x" (HT_Located "Tree" "l_a" "r")
-        (e_datacon "Leaf" "l_a" "r" [])
-        (e_letloc "l_b" "r" (LE_After "Tree" "l_a" "r")
-          (e_let "y" (HT_Located "Tree" "l_b" "r")
-            (e_datacon "Leaf" "l_b" "r" [])
-            (e_datacon "Node" "l" "r" [v_var "x"; v_var "y"]))))).
+  LetLoc("l", "r", <{ start "r" }>,
+    LetLoc("l_a", "r", LE_Next "l" "r",
+      Let("x", loc_ty "Tree" "l_a" "r", e_datacon "Leaf" "l_a" "r" [],
+        LetLoc("l_b", "r", LE_After "Tree" "l_a" "r",
+          Let("y", loc_ty "Tree" "l_b" "r", e_datacon "Leaf" "l_b" "r" [],
+            e_datacon "Node" "l" "r" [v_var "x"; v_var "y"]))))).
 
 Definition ex_tree_case : expr :=
-  e_case (v_var "t")
-    [ pat_clause "Leaf"
-        [("n", HT_Located "Int" "l_n" "r")]
-        (e_val (v_var "n"));
-      pat_clause "Node"
-        [("x", HT_Located "Tree" "l_x" "r");
-         ("y", HT_Located "Tree" "l_y" "r")]
-        (e_val (v_var "x")) ].
+  Let("t1", loc_ty "Tree" "l_t" "r", e_val (v_var "t"),
+    <{ case (v_var "t1") of
+         [ pat_clause "Leaf"
+             [(mk_term_var "n", loc_ty "Int" "l_n" "r")]
+             (e_val (v_var "n"));
+           pat_clause "Node"
+             [(mk_term_var "x", loc_ty "Tree" "l_x" "r");
+              (mk_term_var "y", loc_ty "Tree" "l_y" "r")]
+             (e_val (v_var "x")) ] }>).
 
 End LoCalSyntax.
