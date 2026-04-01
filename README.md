@@ -1,5 +1,7 @@
 # local-mech
 
+[![Rocq build](https://github.com/ulysses4ever/local-mech/actions/workflows/rocq-build.yml/badge.svg)](https://github.com/ulysses4ever/local-mech/actions/workflows/rocq-build.yml)
+
 `local-mech` is a Rocq mechanization project for the **Location Calculus (LoCal)** from Michael Vollmer's thesis, *A Language-based Approach to Programming with Serialized Data*.
 
 The current goal is to formalize LoCal in small, focused modules, following the style used in the reference STLC developments in `materials/`.
@@ -9,7 +11,7 @@ The current goal is to formalize LoCal in small, focused modules, following the 
 The repository currently contains one mechanization module:
 
 - `LoCalSyntax.v` — a first syntax-focused draft of LoCal, including:
-  - core abstract syntax (`loc_exp`, `hty`, `val`, `expr`, etc.),
+  - core abstract syntax (`loc_exp`, `ty`, `val`, `expr`, etc.),
   - custom entries / notation for readable terms,
   - small example expressions inspired by thesis snippets (`start`, `+1`, `after`, `letloc`, `case`).
 
@@ -17,24 +19,12 @@ Typing, operational semantics, and metatheory proofs are planned next.
 
 ## Build instructions
 
-This project is driven by `_CoqProject`.
+This project targets **Rocq 9+** and is driven by `_CoqProject`.
 
-Regenerate the Coq Makefile:
-
-```sh
-coq_makefile -f _CoqProject -o Makefile
-```
-
-Build all tracked modules:
+Generate `Makefile` and build:
 
 ```sh
-make
-```
-
-Fast check for the current module:
-
-```sh
-coqc -Q . LocalMech LoCalSyntax.v
+rocq makefile -f _CoqProject -o Makefile && make
 ```
 
 ### Notes on structure
@@ -46,4 +36,3 @@ coqc -Q . LocalMech LoCalSyntax.v
   - dynamic semantics,
   - auxiliary lemmas/infrastructure,
   - type safety proofs.
-
