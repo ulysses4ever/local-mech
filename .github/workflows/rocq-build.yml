@@ -11,10 +11,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build with Rocq 9
-        uses: coq-community/docker-coq-action@v1
-        with:
-          custom_image: 'rocq/rocq-prover:9.0.1'
-          custom_script: |
-            set -eux
-            rocq makefile -f _CoqProject -o Makefile
-            make
+        run: |
+          set -eux
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            rocq/rocq-prover:9.0.1 \
+            sh -lc 'cp -a /src /tmp/work && cd /tmp/work && rocq makefile -f _CoqProject -o Makefile && make'
