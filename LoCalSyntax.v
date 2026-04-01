@@ -4,6 +4,7 @@ From Stdlib Require Import Strings.String.
 From Stdlib Require Import Init.Nat.
 From Stdlib Require Import List.
 Import ListNotations.
+Open Scope string_scope.
 
 Module LoCalSyntax.
 
@@ -96,5 +97,29 @@ Notation "'case' scrut 'of' branches" :=
     : local_scope.
 
 Open Scope local_scope.
+
+(* Examples mirroring the thesis LoCal snippets (chapter "The Location Calculus"):
+   - building a Node from two Leaf values using start/+1/after,
+   - a simple case over Tree values. *)
+
+Definition ex_tree_alloc : expr :=
+  e_letloc "l" "r" (LE_Start "r")
+    (e_letloc "l_a" "r" (LE_Next "l" "r")
+      (e_let "x" (HT_Located "Tree" "l_a" "r")
+        (e_datacon "Leaf" "l_a" "r" [])
+        (e_letloc "l_b" "r" (LE_After "Tree" "l_a" "r")
+          (e_let "y" (HT_Located "Tree" "l_b" "r")
+            (e_datacon "Leaf" "l_b" "r" [])
+            (e_datacon "Node" "l" "r" [v_var "x"; v_var "y"]))))).
+
+Definition ex_tree_case : expr :=
+  e_case (v_var "t")
+    [ pat_clause "Leaf"
+        [("n", HT_Located "Int" "l_n" "r")]
+        (e_val (v_var "n"));
+      pat_clause "Node"
+        [("x", HT_Located "Tree" "l_x" "r");
+         ("y", HT_Located "Tree" "l_y" "r")]
+        (e_val (v_var "x")) ].
 
 End LoCalSyntax.
