@@ -51,11 +51,11 @@ Inductive datatype_decl : Type :=
 
 Inductive fdecl : Type :=
   | FunDecl : fun_var
-              -> list (loc_var * region_var)
-              -> list ty
-              -> ty
-              -> list region_var
-              -> expr
+              -> list (loc_var * region_var)   (* location params  *)
+              -> list (term_var * ty)          (* named value params *)
+              -> ty                            (* return type *)
+              -> list region_var               (* region params *)
+              -> expr                          (* body *)
               -> fdecl.
 
 Record program : Type := Program

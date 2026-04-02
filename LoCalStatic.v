@@ -371,15 +371,14 @@ with pats_have_type :
    [+ location-param correspondence — see thesis] *)
 Inductive fdecl_has_type : fun_env -> datacon_info -> fdecl -> Prop :=
   | T_FunctionDef :
-      forall FE DI f locs args out regions body
-             params N' tc_out l_out r_out,
-        In (f, (locs, args, out)) FE ->
+      forall FE DI f locs (named_args : list (term_var * ty)) out regions body
+             N' tc_out l_out r_out,
+        In (f, (locs, List.map snd named_args, out)) FE ->
         out = LocTy tc_out l_out r_out ->
         (* Build initial environments from parameters. *)
-        (* params pairs each arg name with its type. *)
         has_type FE DI
-                 params
-                 (params_to_store params)
+                 named_args
+                 (params_to_store named_args)
                  nil  (* C = ∅ *)
                  (cons (r_out, AP_Loc (l_out, r_out)) nil)
                  (cons (l_out, r_out) nil)
@@ -387,7 +386,7 @@ Inductive fdecl_has_type : fun_env -> datacon_info -> fdecl -> Prop :=
                  N'
                  body out ->
         ~ In (l_out, r_out) N' ->
-        fdecl_has_type FE DI (FunDecl f locs args out regions body).
+        fdecl_has_type FE DI (FunDecl f locs named_args out regions body).
 
 (* ---- T-Program (thesis: \tprogram) ----
    ⊢_fun FD_i  (for each function declaration)
