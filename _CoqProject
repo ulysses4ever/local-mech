@@ -1,3 +1,4 @@
 -Q . LocalMech
 
 LoCalSyntax.v
+LoCalStatic.v
