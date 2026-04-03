@@ -178,7 +178,11 @@ Definition store_wf
   /\
   (* Rule 4 — dom(Σ) ∩ N = ∅ *)
   (forall l r T,
-    In ((l, r), T) Sigma -> ~ In (l, r) N).
+    In ((l, r), T) Sigma -> ~ In (l, r) N)
+  /\
+  (forall l r,
+    In (l, r) N ->
+    ~ exists T, In ((l, r), T) Sigma).
 
 (* ================================================================= *)
 (* In_lookup_fdecl: membership in the function list implies lookup    *)
