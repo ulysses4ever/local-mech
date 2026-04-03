@@ -2,6 +2,7 @@ name: Rocq build
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -9,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
 
       - uses: rrbutani/use-nix-shell-action@v1
         with:
