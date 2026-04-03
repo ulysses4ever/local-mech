@@ -15,7 +15,7 @@ From Stdlib Require Import Strings.String.
 From Stdlib Require Import PeanoNat.
 From LocalMech Require Import LoCalSyntax.
 
-Module Import Syn := LoCalSyntax.LoCalSyntax.
+Import LoCalSyntax.LoCalSyntax.
 
 Module LoCalDynamic.
 

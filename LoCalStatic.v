@@ -4,7 +4,7 @@ From Stdlib Require Import List.
 Import ListNotations.
 From Stdlib Require Import Strings.String.
 From LocalMech Require Import LoCalSyntax.
-Module Import Syn := LoCalSyntax.LoCalSyntax.
+Import LoCalSyntax.LoCalSyntax.
 
 Module LoCalStatic.
 

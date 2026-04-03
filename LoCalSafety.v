@@ -14,15 +14,9 @@ From LocalMech Require Import LoCalSyntax.
 From LocalMech Require Import LoCalStatic.
 From LocalMech Require Import LoCalDynamic.
 
-Module Import Syn  := LoCalSyntax.LoCalSyntax.
-Module Import Stat := LoCalStatic.LoCalStatic.
-Module Import Dyn  := LoCalDynamic.LoCalDynamic.
-
-(* Remaining name clashes after deduplication: none — all shared
-   identifiers (laddr, datacon_info, eq_dec lemmas) now live in
-   LoCalSyntax and are imported unqualified via Syn. The only
-   exception is datacon_info used in Stat vs Dyn context, which
-   is now the same definition. *)
+Import LoCalSyntax.LoCalSyntax.
+Import LoCalStatic.LoCalStatic.
+Import LoCalDynamic.LoCalDynamic.
 
 Module LoCalSafety.
 
