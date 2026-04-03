@@ -181,18 +181,26 @@ Definition store_wf
     In ((l, r), T) Sigma -> ~ In (l, r) N).
 
 (* ================================================================= *)
-(* Consistency between fun_env (typing) and list fdecl (dynamics)     *)
+(* In_lookup_fdecl: membership in the function list implies lookup    *)
+(* succeeds (needed to bridge typing's In-premise with step's        *)
+(* lookup_fdecl call).                                                *)
 (* ================================================================= *)
 
-Definition fun_env_consistent
-    (FE  : Stat.fun_env)
-    (FDs : list fdecl) : Prop :=
-  forall f locs_sig params_sig ret_sig,
-    In (f, (locs_sig, params_sig, ret_sig)) FE ->
-    exists named_params regions body,
-      Dyn.lookup_fdecl FDs f =
-        Some (FunDecl f locs_sig named_params ret_sig regions body) /\
-      params_sig = List.map snd named_params.
+Lemma In_lookup_fdecl :
+  forall FDs f locs params retty regions body,
+    In (FunDecl f locs params retty regions body) FDs ->
+    exists l' p' t' rg' b',
+      Dyn.lookup_fdecl FDs f = Some (FunDecl f l' p' t' rg' b').
+Proof.
+  induction FDs as [| [f0 l0 p0 t0 rg0 b0] FDs' IH];
+    intros f locs params retty regions body Hin.
+  - inversion Hin.
+  - simpl. destruct (Dyn.fun_var_eq_dec f f0).
+    + subst. do 5 eexists. reflexivity.
+    + destruct Hin as [Heq | Hin].
+      * inversion Heq; subst. congruence.
+      * eapply IH. exact Hin.
+Qed.
 
 (* ================================================================= *)
 (* Additional invariants needed for progress                          *)
@@ -279,11 +287,11 @@ Proof.
 Qed.
 
 Lemma pats_have_type_In :
-  forall FE DI tc_s G S0 C pats p Al Nl A2 N2 t,
-    Stat.pats_have_type FE DI tc_s G S0 C Al Nl A2 N2 t pats ->
+  forall FDs DI tc_s G S0 C pats p Al Nl A2 N2 t,
+    Stat.pats_have_type FDs DI tc_s G S0 C Al Nl A2 N2 t pats ->
     In p pats ->
     exists A1 N1 A3 N3,
-      Stat.pat_has_type FE DI tc_s G S0 C A1 N1 A3 N3 t p.
+      Stat.pat_has_type FDs DI tc_s G S0 C A1 N1 A3 N3 t p.
 Proof.
   intros FE0 DI0 tc_s0 G0 S0' C0.
   induction pats as [|p' ps' IH]; intros p0 Al0 Nl0 A20 N20 t0 Hpats Hin.
@@ -295,8 +303,8 @@ Proof.
 Qed.
 
 Lemma pat_has_type_inv :
-  forall FE DI tc_s G S0 C Al Nl A2 N2 t dc binds body,
-    Stat.pat_has_type FE DI tc_s G S0 C Al Nl A2 N2 t
+  forall FDs DI tc_s G S0 C Al Nl A2 N2 t dc binds body,
+    Stat.pat_has_type FDs DI tc_s G S0 C Al Nl A2 N2 t
                       (pat_clause dc binds body) ->
     exists tc fieldtcs,
       In (dc, (tc, fieldtcs)) DI /\ tc = tc_s /\
@@ -315,10 +323,10 @@ Qed.
 (* ================================================================= *)
 
 Lemma substitution_val :
-  forall FE DI Gamma x vty Sigma C A N A' N' e T v0,
-    Stat.has_type FE DI (cons (x, vty) Gamma) Sigma C A N A' N' e T ->
-    Stat.has_type FE DI Gamma Sigma C A N A N (e_val v0) vty ->
-    Stat.has_type FE DI Gamma Sigma C A N A' N' (Dyn.subst_val x v0 e) T.
+  forall FDs DI Gamma x vty Sigma C A N A' N' e T v0,
+    Stat.has_type FDs DI (cons (x, vty) Gamma) Sigma C A N A' N' e T ->
+    Stat.has_type FDs DI Gamma Sigma C A N A N (e_val v0) vty ->
+    Stat.has_type FDs DI Gamma Sigma C A N A' N' (Dyn.subst_val x v0 e) T.
 Proof.
 Admitted.
 
@@ -328,9 +336,8 @@ Admitted.
 (* A well-typed expression in an empty variable environment, with a   *)
 (* well-formed store, is either a value or can take a step.           *)
 (*                                                                    *)
-(*   If  ∅;Σ;C;A;N ⊢ A';N'; e : T                                  *)
+(*   If  FDs;∅;Σ;C;A;N ⊢ A';N'; e : T                               *)
 (*   and store_wf(DI, Σ, C, A, N, M, S)                              *)
-(*   and fun_env_consistent(FE, FDs)                                  *)
 (*   and di_functional(DI)                                            *)
 (*   and expr_wf(M, e)                                                *)
 (*   then  (∃ v, e = v)  ∨  (∃ S' M' e', S;M;e ⇒ S';M';e')         *)
@@ -342,19 +349,18 @@ Admitted.
    indices. *)
 
 Lemma progress_gen :
-  forall FE DI G Sigma C A N A2 N2 e Tl,
-    Stat.has_type FE DI G Sigma C A N A2 N2 e Tl ->
+  forall FDs DI G Sigma C A N A2 N2 e Tl,
+    Stat.has_type FDs DI G Sigma C A N A2 N2 e Tl ->
     G = @nil (term_var * ty) ->
-    forall FDs M St,
+    forall M St,
     store_wf DI Sigma C A N M St ->
-    fun_env_consistent FE FDs ->
     di_functional DI ->
     expr_wf M e ->
     (exists vl, e = e_val vl)
     \/ (exists St2 M2 e2, Dyn.step FDs DI St M e St2 M2 e2).
 Proof.
-  intros FE DI G Sigma C A N A2 N2 e Tl Htype.
-  induction Htype; intros HG FDs M St Hwf Hfun Hdi Hewf; subst.
+  intros FDs DI G Sigma C A N A2 N2 e Tl Htype.
+  induction Htype; intros HG M St Hwf Hdi Hewf; subst.
 
   (* ---- T_Var ----
      Γ = nil, so In (x, _) nil is False. *)
@@ -370,7 +376,7 @@ Proof.
   1: {
     right.
     simpl in Hewf; destruct Hewf as [He1 He2].
-    destruct (IHHtype1 eq_refl FDs M St Hwf Hfun Hdi He1)
+    destruct (IHHtype1 eq_refl M St Hwf Hdi He1)
       as [[vl Hval] | [St2 [M2 [e1' Hstep]]]].
     - subst. do 3 eexists. apply Dyn.D_Let_Val.
     - do 3 eexists. apply Dyn.D_Let_Expr.
@@ -417,12 +423,12 @@ Proof.
   }
 
   (* ---- T_App ----
-     From fun_env_consistent, the function is in the fdecl list,
-     so D_App applies. *)
+     The function declaration is in FDs (from T_App premise),
+     so In_lookup_fdecl gives lookup success for D_App. *)
   1: {
     right.
-    destruct (Hfun f sig_locs sig_args sig_out H)
-      as [np [rg [bd [Hlk _]]]].
+    destruct (In_lookup_fdecl _ _ _ _ _ _ _ H)
+      as [l' [p' [t' [rg' [b' Hlk]]]]].
     do 3 eexists. eapply Dyn.D_App. exact Hlk.
   }
 
@@ -487,10 +493,9 @@ Proof.
 Qed.
 
 Theorem progress :
-  forall FDs FE DI Sigma C A N A' N' M S e T,
-    Stat.has_type FE DI nil Sigma C A N A' N' e T ->
+  forall FDs DI Sigma C A N A' N' M S e T,
+    Stat.has_type FDs DI nil Sigma C A N A' N' e T ->
     store_wf DI Sigma C A N M S ->
-    fun_env_consistent FE FDs ->
     di_functional DI ->
     expr_wf M e ->
     (exists v0, e = e_val v0)
@@ -515,13 +520,12 @@ Qed.
 (* ================================================================= *)
 
 Theorem preservation :
-  forall FDs FE DI Sigma C A N A' N' M S e T S' M' e',
-    Stat.has_type FE DI nil Sigma C A N A' N' e T ->
+  forall FDs DI Sigma C A N A' N' M S e T S' M' e',
+    Stat.has_type FDs DI nil Sigma C A N A' N' e T ->
     store_wf DI Sigma C A N M S ->
-    fun_env_consistent FE FDs ->
     Dyn.step FDs DI S M e S' M' e' ->
     exists Sigma' C' A'' N'',
-      Stat.has_type FE DI nil Sigma' C' A' N' A'' N'' e' T
+      Stat.has_type FDs DI nil Sigma' C' A' N' A'' N'' e' T
       /\ store_wf DI Sigma' C' A' N' M' S'
       /\ (forall lr T0, In (lr, T0) Sigma -> In (lr, T0) Sigma').
 Proof.
@@ -578,10 +582,9 @@ Admitted.
 (* ================================================================= *)
 
 Theorem type_safety :
-  forall FDs FE DI Sigma C A N A' N' M S e T Sn Mn en,
-    Stat.has_type FE DI nil Sigma C A N A' N' e T ->
+  forall FDs DI Sigma C A N A' N' M S e T Sn Mn en,
+    Stat.has_type FDs DI nil Sigma C A N A' N' e T ->
     store_wf DI Sigma C A N M S ->
-    fun_env_consistent FE FDs ->
     di_functional DI ->
     expr_wf M e ->
     Dyn.multi_step FDs DI S M e Sn Mn en ->
