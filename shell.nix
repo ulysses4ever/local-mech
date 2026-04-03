@@ -1,5 +1,5 @@
 let
-  pkgs = import (fetchTarball "https://nixos.org/channels/nixpkgs-unstable/nixexprs.tar.xz") {};
+  pkgs = import <nixpkgs> {};
 in pkgs.mkShell {
   packages = [
     pkgs.rocq-core
