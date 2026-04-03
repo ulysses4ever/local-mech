@@ -2,6 +2,7 @@ name: Rocq build
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -9,11 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Build with Rocq 9
+      - uses: cachix/install-nix-action@v30
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: rrbutani/use-nix-shell-action@v1
+        with:
+          file: shell.nix
+      - name: Build with Rocq
         run: |
           set -eux
-          docker run --rm \
-            -v "$PWD:/src:ro" \
-            rocq/rocq-prover:9.0.1 \
-            sh -lc 'cp -a /src /tmp/work && cd /tmp/work && rocq makefile -f _CoqProject -o Makefile && make'
+          rocq makefile -f _CoqProject -o Makefile && make

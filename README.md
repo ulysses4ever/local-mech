@@ -43,6 +43,20 @@ Generate `Makefile` and build:
 rocq makefile -f _CoqProject -o Makefile && make
 ```
 
+### Building with Nix
+
+A `shell.nix` is provided that pulls `rocq-core` and `rocqPackages.stdlib` from `nixpkgs-unstable`. To enter a shell with all dependencies available:
+
+```sh
+nix-shell
+```
+
+Then run the build as usual:
+
+```sh
+rocq makefile -f _CoqProject -o Makefile && make
+```
+
 ### Notes on structure
 
 - `materials/` contains reference/specification material (STLC developments, the thesis) and is not part of the core build target for LoCal mechanization work.
