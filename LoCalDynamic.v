@@ -22,36 +22,8 @@ Module LoCalDynamic.
 Open Scope string_scope.
 
 (* ================================================================= *)
-(* Decidable equality (needed for lookups; mirrors LoCalStatic)      *)
-(* ================================================================= *)
-
-Lemma tycon_eq_dec : forall (a b : tycon), {a = b} + {a <> b}.
-Proof. decide equality; apply string_dec. Defined.
-
-Lemma datacon_eq_dec : forall (a b : datacon), {a = b} + {a <> b}.
-Proof. decide equality; apply string_dec. Defined.
-
-Lemma fun_var_eq_dec : forall (a b : fun_var), {a = b} + {a <> b}.
-Proof. decide equality; apply string_dec. Defined.
-
-Lemma term_var_eq_dec : forall (a b : term_var), {a = b} + {a <> b}.
-Proof. decide equality; apply string_dec. Defined.
-
-Lemma loc_var_eq_dec : forall (a b : loc_var), {a = b} + {a <> b}.
-Proof. decide equality; apply string_dec. Defined.
-
-Lemma region_var_eq_dec : forall (a b : region_var), {a = b} + {a <> b}.
-Proof. decide equality; apply string_dec. Defined.
-
-(* ================================================================= *)
 (* Runtime structures (Figure 2.5 of the thesis)                     *)
 (* ================================================================= *)
-
-(* Symbolic location address: a (loc_var, region_var) pair. *)
-Definition laddr : Type := (loc_var * region_var)%type.
-
-Lemma laddr_eq_dec : forall (a b : laddr), {a = b} + {a <> b}.
-Proof. decide equality; [apply region_var_eq_dec | apply loc_var_eq_dec]. Defined.
 
 (* Concrete address in the store: a region and an index. *)
 Definition concrete_loc : Type := (region_var * nat)%type.
@@ -66,9 +38,6 @@ Definition store : Type := list (region_var * heap).
 (* Location map: maps symbolic locations to concrete addresses.
    M = {l₁^r₁ ↦ ⟨r₁,i₁⟩, ..., lₙ^rₙ ↦ ⟨rₙ,iₙ⟩} *)
 Definition loc_map : Type := list (laddr * concrete_loc).
-
-(* Datacon info: maps constructor names to (result tycon, field tycons). *)
-Definition datacon_info : Type := list (datacon * (tycon * list tycon)).
 
 (* ================================================================= *)
 (* Lookup operations                                                 *)

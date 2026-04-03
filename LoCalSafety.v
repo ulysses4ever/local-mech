@@ -14,14 +14,15 @@ From LocalMech Require Import LoCalSyntax.
 From LocalMech Require Import LoCalStatic.
 From LocalMech Require Import LoCalDynamic.
 
-Module Import Syn := LoCalSyntax.LoCalSyntax.
+Module Import Syn  := LoCalSyntax.LoCalSyntax.
+Module Import Stat := LoCalStatic.LoCalStatic.
+Module Import Dyn  := LoCalDynamic.LoCalDynamic.
 
-(* We access Static and Dynamic via qualified names to avoid
-   ambiguity for identifiers defined in both (laddr, datacon_info,
-   eq_dec lemmas). *)
-
-Module Stat := LoCalStatic.LoCalStatic.
-Module Dyn  := LoCalDynamic.LoCalDynamic.
+(* Remaining name clashes after deduplication: none — all shared
+   identifiers (laddr, datacon_info, eq_dec lemmas) now live in
+   LoCalSyntax and are imported unqualified via Syn. The only
+   exception is datacon_info used in Stat vs Dyn context, which
+   is now the same definition. *)
 
 Module LoCalSafety.
 
@@ -36,7 +37,7 @@ Open Scope string_scope.
 (* this stands for −1 (no allocation yet).                            *)
 (* ================================================================= *)
 
-Fixpoint max_heap_index (h : Dyn.heap) : option nat :=
+Fixpoint max_heap_index (h : heap) : option nat :=
   match h with
   | nil => None
   | (i, _) :: h' =>
@@ -46,8 +47,8 @@ Fixpoint max_heap_index (h : Dyn.heap) : option nat :=
       end
   end.
 
-Definition allocptr (S : Dyn.store) (r : region_var) : option nat :=
-  match Dyn.store_find_heap S r with
+Definition allocptr (S : store) (r : region_var) : option nat :=
+  match store_find_heap S r with
   | None => None
   | Some h => max_heap_index h
   end.
@@ -67,16 +68,16 @@ Definition gt_allocptr (i : nat) (ap : option nat) : Prop :=
 (* ================================================================= *)
 
 Definition constr_app_wf
-    (DI : Dyn.datacon_info)
-    (C  : Stat.conloc_env)
-    (M  : Dyn.loc_map)
-    (S  : Dyn.store) : Prop :=
+    (DI : datacon_info)
+    (C  : conloc_env)
+    (M  : loc_map)
+    (S  : store) : Prop :=
 
   (* Rule 1 — constraint-start:
      (l^r ↦ start(r)) ∈ C  ⟹  M(l^r) = ⟨r, 0⟩ *)
   (forall l r,
     In ((l, r), LE_Start r) C ->
-    Dyn.lookup_loc M (l, r) = Some (r, 0))
+    lookup_loc M (l, r) = Some (r, 0))
   /\
   (* Rule 2 — constraint-tag:
      (l^r ↦ l'^r + 1) ∈ C  ⟹
@@ -84,8 +85,8 @@ Definition constr_app_wf
   (forall l r l',
     In ((l, r), LE_Next l' r) C ->
     exists i,
-      Dyn.lookup_loc M (l', r) = Some (r, i) /\
-      Dyn.lookup_loc M (l, r) = Some (r, i + 1))
+      lookup_loc M (l', r) = Some (r, i) /\
+      lookup_loc M (l, r) = Some (r, i + 1))
   /\
   (* Rule 3 — constraint-after:
      (l^r ↦ after(T@l'^r)) ∈ C  ⟹
@@ -94,9 +95,9 @@ Definition constr_app_wf
   (forall l r T l',
     In ((l, r), LE_After T l' r) C ->
     exists i j,
-      Dyn.lookup_loc M (l', r) = Some (r, i) /\
-      Dyn.end_witness DI S (r, i) T (r, j) /\
-      Dyn.lookup_loc M (l, r) = Some (r, j)).
+      lookup_loc M (l', r) = Some (r, i) /\
+      end_witness DI S (r, i) T (r, j) /\
+      lookup_loc M (l, r) = Some (r, j)).
 
 (* ================================================================= *)
 (* Allocation well-formedness                                         *)
@@ -105,20 +106,20 @@ Definition constr_app_wf
 (* ================================================================= *)
 
 Definition alloc_wf
-    (DI : Dyn.datacon_info)
-    (A  : Stat.alloc_env)
-    (N  : Stat.nursery)
-    (M  : Dyn.loc_map)
-    (S  : Dyn.store) : Prop :=
+    (DI : datacon_info)
+    (A  : alloc_env)
+    (N  : nursery)
+    (M  : loc_map)
+    (S  : store) : Prop :=
 
   (* Rule 1 — linear-alloc (in-flight):
      (r ↦ (l,r)) ∈ A  ∧  (l,r) ∈ N  ⟹
        ∃ i, M(l,r) = ⟨r,i⟩  ∧  i > allocptr(r,S) *)
   (forall r l,
-    In (r, Stat.AP_Loc (l, r)) A ->
+    In (r, AP_Loc (l, r)) A ->
     In (l, r) N ->
     exists i,
-      Dyn.lookup_loc M (l, r) = Some (r, i) /\
+      lookup_loc M (l, r) = Some (r, i) /\
       gt_allocptr i (allocptr S r))
   /\
   (* Rule 2 — linear-alloc2 (fully allocated):
@@ -126,10 +127,10 @@ Definition alloc_wf
        ∧  ewitness(T,⟨r,i⟩,S,⟨r,j⟩)
        ⟹  j > allocptr(r,S) *)
   (forall r l i T j,
-    In (r, Stat.AP_Loc (l, r)) A ->
-    Dyn.lookup_loc M (l, r) = Some (r, i) ->
+    In (r, AP_Loc (l, r)) A ->
+    lookup_loc M (l, r) = Some (r, i) ->
     ~ In (l, r) N ->
-    Dyn.end_witness DI S (r, i) T (r, j) ->
+    end_witness DI S (r, i) T (r, j) ->
     gt_allocptr j (allocptr S r))
   /\
   (* Rule 3 — write-once:
@@ -137,14 +138,14 @@ Definition alloc_wf
   (forall l r,
     In (l, r) N ->
     exists i,
-      Dyn.lookup_loc M (l, r) = Some (r, i) /\
-      Dyn.heap_lookup S r i = None)
+      lookup_loc M (l, r) = Some (r, i) /\
+      heap_lookup S r i = None)
   /\
   (* Rule 4 — empty-region:
      (r ↦ ∅) ∈ A  ⟹  r ∉ dom(S) *)
   (forall r,
-    In (r, Stat.AP_None) A ->
-    Dyn.store_find_heap S r = None).
+    In (r, AP_None) A ->
+    store_find_heap S r = None).
 
 (* ================================================================= *)
 (* Store well-formedness  (main judgment)                             *)
@@ -153,13 +154,13 @@ Definition alloc_wf
 (* ================================================================= *)
 
 Definition store_wf
-    (DI    : Dyn.datacon_info)
-    (Sigma : Stat.store_type)
-    (C     : Stat.conloc_env)
-    (A     : Stat.alloc_env)
-    (N     : Stat.nursery)
-    (M     : Dyn.loc_map)
-    (S     : Dyn.store) : Prop :=
+    (DI    : datacon_info)
+    (Sigma : store_type)
+    (C     : conloc_env)
+    (A     : alloc_env)
+    (N     : nursery)
+    (M     : loc_map)
+    (S     : store) : Prop :=
 
   (* Rule 1 — map-store consistency:
      ∀ (l,r) ↦ T ∈ Σ,
@@ -167,8 +168,8 @@ Definition store_wf
   (forall l r T,
     In ((l, r), T) Sigma ->
     exists i j,
-      Dyn.lookup_loc M (l, r) = Some (r, i) /\
-      Dyn.end_witness DI S (r, i) T (r, j))
+      lookup_loc M (l, r) = Some (r, i) /\
+      end_witness DI S (r, i) T (r, j))
   /\
   (* Rule 2 — constructor-application well-formedness *)
   constr_app_wf DI C M S
@@ -194,12 +195,12 @@ Lemma In_lookup_fdecl :
   forall FDs f locs params retty regions body,
     In (FunDecl f locs params retty regions body) FDs ->
     exists l' p' t' rg' b',
-      Dyn.lookup_fdecl FDs f = Some (FunDecl f l' p' t' rg' b').
+      lookup_fdecl FDs f = Some (FunDecl f l' p' t' rg' b').
 Proof.
   induction FDs as [| [f0 l0 p0 t0 rg0 b0] FDs' IH];
     intros f locs params retty regions body Hin.
   - inversion Hin.
-  - simpl. destruct (Dyn.fun_var_eq_dec f f0).
+  - simpl. destruct (fun_var_eq_dec f f0).
     + subst. do 5 eexists. reflexivity.
     + destruct Hin as [Heq | Hin].
       * inversion Heq; subst. congruence.
@@ -211,19 +212,19 @@ Qed.
 (* ================================================================= *)
 
 (* Each constructor maps to unique info in DI. *)
-Definition di_functional (DI : Dyn.datacon_info) : Prop :=
+Definition di_functional (DI : datacon_info) : Prop :=
   forall K info1 info2,
     In (K, info1) DI -> In (K, info2) DI -> info1 = info2.
 
 (* Concrete location values are consistent with the location map. *)
-Definition val_wf (M : Dyn.loc_map) (vl : val) : Prop :=
+Definition val_wf (M : loc_map) (vl : val) : Prop :=
   match vl with
   | v_var _ => True
-  | v_cloc r0 i l r => Dyn.lookup_loc M (l, r) = Some (r0, i)
+  | v_cloc r0 i l r => lookup_loc M (l, r) = Some (r0, i)
   end.
 
 (* All concrete location values in an expression are consistent. *)
-Fixpoint expr_wf (M : Dyn.loc_map) (e : expr) {struct e} : Prop :=
+Fixpoint expr_wf (M : loc_map) (e : expr) {struct e} : Prop :=
   match e with
   | e_val vl => val_wf M vl
   | e_app _ _ vs => Forall (val_wf M) vs
@@ -246,11 +247,11 @@ Fixpoint expr_wf (M : Dyn.loc_map) (e : expr) {struct e} : Prop :=
 (* ================================================================= *)
 
 Lemma lookup_datacon_In : forall DI K info,
-  Dyn.lookup_datacon DI K = Some info -> In (K, info) DI.
+  lookup_datacon DI K = Some info -> In (K, info) DI.
 Proof.
   induction DI as [|[K' info'] DI' IH]; intros; simpl in *.
   - discriminate.
-  - destruct (Dyn.datacon_eq_dec K K').
+  - destruct (datacon_eq_dec K K').
     + inversion H; subst. left; reflexivity.
     + right. apply IH. assumption.
 Qed.
@@ -258,12 +259,12 @@ Qed.
 Lemma In_find_matching_pat : forall K pats binds body,
   In (pat_clause K binds body) pats ->
   exists binds' body',
-    Dyn.find_matching_pat K pats = Some (pat_clause K binds' body').
+    find_matching_pat K pats = Some (pat_clause K binds' body').
 Proof.
   intros K pats. induction pats as [|[K' b' bd'] pats' IH];
     intros binds body Hin.
   - destruct Hin.
-  - simpl. destruct (Dyn.datacon_eq_dec K K') as [Heq|Hneq].
+  - simpl. destruct (datacon_eq_dec K K') as [Heq|Hneq].
     + subst K'. eauto.
     + destruct Hin as [Hin | Hin].
       * inversion Hin; subst. congruence.
@@ -271,18 +272,18 @@ Proof.
 Qed.
 
 Lemma find_matching_pat_In : forall K pats p,
-  Dyn.find_matching_pat K pats = Some p -> In p pats.
+  find_matching_pat K pats = Some p -> In p pats.
 Proof.
   induction pats as [|[K' b' bd'] pats' IH]; intros; simpl in *.
   - discriminate.
-  - destruct (Dyn.datacon_eq_dec K K') as [Heq|Hneq].
+  - destruct (datacon_eq_dec K K') as [Heq|Hneq].
     + inversion H; subst. left; reflexivity.
     + right. apply IH. exact H.
 Qed.
 
 Lemma ewf_to_field_starts : forall DI St r i Ts j,
-  Dyn.end_witness_fields DI St r i Ts j ->
-  exists indices, Dyn.field_starts DI St r i Ts indices.
+  end_witness_fields DI St r i Ts j ->
+  exists indices, field_starts DI St r i Ts indices.
 Proof.
   intros. induction H.
   - exists nil. constructor.
@@ -292,10 +293,10 @@ Qed.
 
 Lemma pats_have_type_In :
   forall FDs DI tc_s G S0 C pats p Al Nl A2 N2 t,
-    Stat.pats_have_type FDs DI tc_s G S0 C Al Nl A2 N2 t pats ->
+    pats_have_type FDs DI tc_s G S0 C Al Nl A2 N2 t pats ->
     In p pats ->
     exists A1 N1 A3 N3,
-      Stat.pat_has_type FDs DI tc_s G S0 C A1 N1 A3 N3 t p.
+      pat_has_type FDs DI tc_s G S0 C A1 N1 A3 N3 t p.
 Proof.
   intros FE0 DI0 tc_s0 G0 S0' C0.
   induction pats as [|p' ps' IH]; intros p0 Al0 Nl0 A20 N20 t0 Hpats Hin.
@@ -308,7 +309,7 @@ Qed.
 
 Lemma pat_has_type_inv :
   forall FDs DI tc_s G S0 C Al Nl A2 N2 t dc binds body,
-    Stat.pat_has_type FDs DI tc_s G S0 C Al Nl A2 N2 t
+    pat_has_type FDs DI tc_s G S0 C Al Nl A2 N2 t
                       (pat_clause dc binds body) ->
     exists tc fieldtcs,
       In (dc, (tc, fieldtcs)) DI /\ tc = tc_s /\
@@ -328,9 +329,9 @@ Qed.
 
 Lemma substitution_val :
   forall FDs DI Gamma x vty Sigma C A N A' N' e T v0,
-    Stat.has_type FDs DI (cons (x, vty) Gamma) Sigma C A N A' N' e T ->
-    Stat.has_type FDs DI Gamma Sigma C A N A N (e_val v0) vty ->
-    Stat.has_type FDs DI Gamma Sigma C A N A' N' (Dyn.subst_val x v0 e) T.
+    has_type FDs DI (cons (x, vty) Gamma) Sigma C A N A' N' e T ->
+    has_type FDs DI Gamma Sigma C A N A N (e_val v0) vty ->
+    has_type FDs DI Gamma Sigma C A N A' N' (subst_val x v0 e) T.
 Proof.
 Admitted.
 
@@ -354,14 +355,14 @@ Admitted.
 
 Lemma progress_gen :
   forall FDs DI G Sigma C A N A2 N2 e Tl,
-    Stat.has_type FDs DI G Sigma C A N A2 N2 e Tl ->
+    has_type FDs DI G Sigma C A N A2 N2 e Tl ->
     G = @nil (term_var * ty) ->
     forall M St,
     store_wf DI Sigma C A N M St ->
     di_functional DI ->
     expr_wf M e ->
     (exists vl, e = e_val vl)
-    \/ (exists St2 M2 e2, Dyn.step FDs DI St M e St2 M2 e2).
+    \/ (exists St2 M2 e2, step FDs DI St M e St2 M2 e2).
 Proof.
   intros FDs DI G Sigma C A N A2 N2 e Tl Htype.
   induction Htype; intros HG M St Hwf Hdi Hewf; subst.
@@ -382,19 +383,19 @@ Proof.
     simpl in Hewf; destruct Hewf as [He1 He2].
     destruct (IHHtype1 eq_refl M St Hwf Hdi He1)
       as [[vl Hval] | [St2 [M2 [e1' Hstep]]]].
-    - subst. do 3 eexists. apply Dyn.D_Let_Val.
-    - do 3 eexists. apply Dyn.D_Let_Expr.
+    - subst. do 3 eexists. apply D_Let_Val.
+    - do 3 eexists. apply D_Let_Expr.
       + destruct e1; try reflexivity. exfalso. inversion Hstep.
       + exact Hstep.
   }
 
   (* ---- T_LRegion ----
      Unconditionally steps with D_LetRegion. *)
-  1: { right. do 3 eexists. apply Dyn.D_LetRegion. }
+  1: { right. do 3 eexists. apply D_LetRegion. }
 
   (* ---- T_LLStart ----
      Unconditionally steps with D_LetLoc_Start. *)
-  1: { right. do 3 eexists. apply Dyn.D_LetLoc_Start. }
+  1: { right. do 3 eexists. apply D_LetLoc_Start. }
 
   (* ---- T_LLTag ----
      From alloc_wf (write-once), (lprev,r) ∈ N gives
@@ -403,7 +404,7 @@ Proof.
     right.
     destruct Hwf as [_ [_ [[_ [_ [Hwo _]]] _]]].
     destruct (Hwo lprev r H0) as [i [Hlk _]].
-    do 3 eexists. eapply Dyn.D_LetLoc_Tag. exact Hlk.
+    do 3 eexists. eapply D_LetLoc_Tag. exact Hlk.
   }
 
   (* ---- T_LLAfter ----
@@ -413,7 +414,7 @@ Proof.
     right.
     destruct Hwf as [Hms _].
     destruct (Hms l1 r tc_prev H0) as [i [j [Hlk Hew]]].
-    do 3 eexists. eapply Dyn.D_LetLoc_After; eauto.
+    do 3 eexists. eapply D_LetLoc_After; eauto.
   }
 
   (* ---- T_DataCon ----
@@ -423,7 +424,7 @@ Proof.
     right.
     destruct Hwf as [_ [_ [[_ [_ [Hwo _]]] _]]].
     destruct (Hwo l r H0) as [i [Hlk _]].
-    do 3 eexists. eapply Dyn.D_DataCon. exact Hlk.
+    do 3 eexists. eapply D_DataCon. exact Hlk.
   }
 
   (* ---- T_App ----
@@ -433,7 +434,7 @@ Proof.
     right.
     destruct (In_lookup_fdecl _ _ _ _ _ _ _ H)
       as [l' [p' [t' [rg' [b' Hlk]]]]].
-    do 3 eexists. eapply Dyn.D_App. exact Hlk.
+    do 3 eexists. eapply D_App. exact Hlk.
   }
 
   (* ---- T_Case ----
@@ -466,7 +467,7 @@ Proof.
       (* 4. Invert end_witness to get tag lookup and field info *)
       inversion Hew; subst.
       (* 5. pats_cover guarantees a matching pattern for K *)
-      match goal with [ Hlookup : Dyn.lookup_datacon _ _ = Some _ |- _ ] =>
+      match goal with [ Hlookup : lookup_datacon _ _ = Some _ |- _ ] =>
         apply lookup_datacon_In in Hlookup as HinDI
       end.
       destruct (H K fieldtys HinDI) as [b0 [bd0 Hin]].
@@ -483,11 +484,11 @@ Proof.
         by (apply Hdi with K; [exact HinDI | subst; exact HinDI_p]).
       inversion Heq; subst.
       (* 8. end_witness_fields gives field_starts *)
-      match goal with [ Hewf : Dyn.end_witness_fields _ _ _ _ _ _ |- _ ] =>
+      match goal with [ Hewf : end_witness_fields _ _ _ _ _ _ |- _ ] =>
         destruct (ewf_to_field_starts _ _ _ _ _ _ Hewf) as [indices Hfs]
       end.
       (* 9. Assemble D_Case *)
-      do 3 eexists. eapply Dyn.D_Case; eauto.
+      do 3 eexists. eapply D_Case; eauto.
   }
 
   (* Auxiliary goals from mutual induction (pat_has_type, pats_have_type).
@@ -498,12 +499,12 @@ Qed.
 
 Theorem progress :
   forall FDs DI Sigma C A N A' N' M S e T,
-    Stat.has_type FDs DI nil Sigma C A N A' N' e T ->
+    has_type FDs DI nil Sigma C A N A' N' e T ->
     store_wf DI Sigma C A N M S ->
     di_functional DI ->
     expr_wf M e ->
     (exists v0, e = e_val v0)
-    \/ (exists S' M' e', Dyn.step FDs DI S M e S' M' e').
+    \/ (exists S' M' e', step FDs DI S M e S' M' e').
 Proof.
   intros. eapply progress_gen; eassumption || reflexivity.
 Qed.
@@ -525,11 +526,11 @@ Qed.
 
 Theorem preservation :
   forall FDs DI Sigma C A N A' N' M S e T S' M' e',
-    Stat.has_type FDs DI nil Sigma C A N A' N' e T ->
+    has_type FDs DI nil Sigma C A N A' N' e T ->
     store_wf DI Sigma C A N M S ->
-    Dyn.step FDs DI S M e S' M' e' ->
+    step FDs DI S M e S' M' e' ->
     exists Sigma' C' A'' N'',
-      Stat.has_type FDs DI nil Sigma' C' A' N' A'' N'' e' T
+      has_type FDs DI nil Sigma' C' A' N' A'' N'' e' T
       /\ store_wf DI Sigma' C' A' N' M' S'
       /\ (forall lr T0, In (lr, T0) Sigma -> In (lr, T0) Sigma').
 Proof.
@@ -587,13 +588,13 @@ Admitted.
 
 Theorem type_safety :
   forall FDs DI Sigma C A N A' N' M S e T Sn Mn en,
-    Stat.has_type FDs DI nil Sigma C A N A' N' e T ->
+    has_type FDs DI nil Sigma C A N A' N' e T ->
     store_wf DI Sigma C A N M S ->
     di_functional DI ->
     expr_wf M e ->
-    Dyn.multi_step FDs DI S M e Sn Mn en ->
+    multi_step FDs DI S M e Sn Mn en ->
     (exists v0, en = e_val v0)
-    \/ (exists S' M' e', Dyn.step FDs DI Sn Mn en S' M' e').
+    \/ (exists S' M' e', step FDs DI Sn Mn en S' M' e').
 Proof.
   (* By induction on multi_step:
      - MS_refl: apply progress.

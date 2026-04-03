@@ -12,9 +12,6 @@ Module LoCalStatic.
 (* Environment types and helpers for the LoCal type system (§2.2.1). *)
 (* ================================================================= *)
 
-(* Location address: a (loc_var, region_var) pair. *)
-Definition laddr : Type := (loc_var * region_var)%type.
-
 (* Shorthand for the only type former. *)
 Definition located_type : Type := ty.
 Notation LocTy := loc_ty.
@@ -35,40 +32,9 @@ Definition nursery     : Type := list laddr.                     (* N *)
 
 (* ---- Global contexts (not threaded through the judgment) ---- *)
 
-(* Datatype constructor info: maps each datacon to
-   (result_tycon, [field_tycon_1, ..., field_tycon_n]). *)
-Definition datacon_info : Type := list (datacon * (tycon * list tycon)).
-
 (* Function environment: shared by typing and dynamics.
    Each entry is an fdecl (defined in LoCalSyntax). *)
 Definition fun_env : Type := list fdecl.
-
-(* ---- Decidable equality for identifier wrapper types ---- *)
-
-Lemma tycon_eq_dec : forall (a b : tycon), {a = b} + {a <> b}.
-Proof. intros [a] [b]; destruct (string_dec a b); [left|right]; congruence. Defined.
-
-Lemma datacon_eq_dec : forall (a b : datacon), {a = b} + {a <> b}.
-Proof. intros [a] [b]; destruct (string_dec a b); [left|right]; congruence. Defined.
-
-Lemma fun_var_eq_dec : forall (a b : fun_var), {a = b} + {a <> b}.
-Proof. intros [a] [b]; destruct (string_dec a b); [left|right]; congruence. Defined.
-
-Lemma term_var_eq_dec : forall (a b : term_var), {a = b} + {a <> b}.
-Proof. intros [a] [b]; destruct (string_dec a b); [left|right]; congruence. Defined.
-
-Lemma loc_var_eq_dec : forall (a b : loc_var), {a = b} + {a <> b}.
-Proof. intros [a] [b]; destruct (string_dec a b); [left|right]; congruence. Defined.
-
-Lemma region_var_eq_dec : forall (a b : region_var), {a = b} + {a <> b}.
-Proof. intros [a] [b]; destruct (string_dec a b); [left|right]; congruence. Defined.
-
-Lemma laddr_eq_dec : forall (a b : laddr), {a = b} + {a <> b}.
-Proof.
-  intros [la ra] [lb rb].
-  destruct (loc_var_eq_dec la lb); destruct (region_var_eq_dec ra rb);
-    [left|right|right|right]; congruence.
-Defined.
 
 (* ---- Environment operations ---- *)
 
