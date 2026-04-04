@@ -369,6 +369,17 @@ Proof.
   - rewrite IH. rewrite <- app_assoc. reflexivity.
 Qed.
 
+Lemma extend_tenv_list_app :
+  forall prefix G binds,
+    extend_tenv_list (prefix ++ G)%list binds =
+    (((rev binds ++ prefix)%list) ++ G)%list.
+Proof.
+  intros prefix G binds.
+  rewrite extend_tenv_list_rev.
+  rewrite <- app_assoc.
+  reflexivity.
+Qed.
+
 Lemma tenv_equiv_extend :
   forall G1 G2 x t,
     tenv_equiv G1 G2 ->
@@ -529,7 +540,7 @@ Proof.
 Qed.
 
 Lemma existsb_bind_hit :
-  forall x (binds : list (term_var * ty)),
+  forall x (binds : list term_binding),
     existsb
       (fun b => if term_var_eq_dec x (fst b) then true else false)
       binds = true ->
@@ -543,7 +554,7 @@ Proof.
 Qed.
 
 Lemma existsb_bind_miss :
-  forall x (binds : list (term_var * ty)) t,
+  forall x (binds : list term_binding) t,
     existsb
       (fun b => if term_var_eq_dec x (fst b) then true else false)
       binds = false ->
@@ -567,20 +578,6 @@ Proof.
   induction entries as [| entry entries IH]; intros S0 ent Hin; simpl.
   - exact Hin.
   - apply IH. simpl. right. exact Hin.
-Qed.
-
-Lemma tenv_equiv_shadow_under_binds :
-  forall Gamma binds x vty,
-    (exists t, In (x, t) binds) ->
-    tenv_equiv (extend_tenv_list ((x, vty) :: Gamma) binds)
-               (extend_tenv_list Gamma binds).
-Proof.
-  intros Gamma binds x vty [t Hin].
-  repeat rewrite extend_tenv_list_rev.
-  apply tenv_equiv_shadow_under_prefix.
-  destruct (in_lookup_tenv (rev binds) x t) as [t' Hlookup].
-  - apply (proj1 (in_rev binds (x, t))). exact Hin.
-  - rewrite Hlookup. discriminate.
 Qed.
 
 Lemma lookup_tenv_extend_tenv_list_miss :
@@ -610,18 +607,15 @@ Lemma tenv_equiv_shadow_under_binds_prefix :
                (extend_tenv_list ((prefix ++ Gamma)%list) binds).
 Proof.
   intros prefix Gamma binds x t Hhit.
-  repeat rewrite extend_tenv_list_rev.
-  replace ((rev binds ++ prefix ++ (x, t) :: Gamma)%list)
-    with ((((rev binds ++ prefix)%list) ++ (x, t) :: Gamma)%list).
-  2:{ rewrite <- app_assoc. reflexivity. }
-  replace ((rev binds ++ prefix ++ Gamma)%list)
-    with ((((rev binds ++ prefix)%list) ++ Gamma)%list).
-  2:{ rewrite <- app_assoc. reflexivity. }
-  apply tenv_equiv_shadow_under_prefix.
+  rewrite !(extend_tenv_list_app prefix).
+  eapply (tenv_equiv_shadow_under_prefix ((rev binds ++ prefix)%list) Gamma x t).
   apply existsb_bind_hit in Hhit as [t' Hin].
   destruct (in_lookup_tenv (rev binds) x t') as [t'' Hlookup].
   - apply (proj1 (in_rev binds (x, t'))). exact Hin.
-  - rewrite lookup_tenv_app. rewrite Hlookup. discriminate.
+  - intro Hnone.
+    rewrite lookup_tenv_app in Hnone.
+    rewrite Hlookup in Hnone.
+    discriminate.
 Qed.
 
 Lemma in_subst_pats_val :
@@ -866,14 +860,28 @@ Proof.
     subst G. simpl.
     destruct
       (existsb
-         (fun b : term_var * ty =>
+         (fun b : term_binding =>
             if term_var_eq_dec z (fst b) then true else false)
-         binds) eqn:Hbinds.
-    + eapply T_Pat; eauto.
+         binds) eqn:Hbinds; simpl.
+    + replace
+        (existsb
+           (fun b : term_var * located_type =>
+              if term_var_eq_dec z (fst b) then true else false)
+           binds)
+        with true by (symmetry; exact Hbinds).
+      simpl.
+      eapply T_Pat; eauto.
       eapply expr_has_type_tenv_equiv.
       * exact Hbody.
       * apply tenv_equiv_shadow_under_binds_prefix. exact Hbinds.
-    + eapply T_Pat; eauto.
+    + replace
+        (existsb
+           (fun b : term_var * located_type =>
+              if term_var_eq_dec z (fst b) then true else false)
+           binds)
+        with false by (symmetry; exact Hbinds).
+      simpl.
+      eapply T_Pat; eauto.
       replace (extend_tenv_list ((prefix ++ Gamma)%list) binds)
         with ((extend_tenv_list prefix binds ++ Gamma)%list).
       * eapply IHbody
@@ -935,7 +943,7 @@ Qed.
 Lemma progress_gen :
   forall FDs DI G Sigma C A N A2 N2 e Tl,
     has_type FDs DI G Sigma C A N A2 N2 e Tl ->
-    G = @nil (term_var * ty) ->
+    G = @nil term_binding ->
     forall M St,
     store_wf DI Sigma C A N M St ->
     di_functional DI ->

@@ -12,22 +12,26 @@ Module LoCalStatic.
 (* Environment types and helpers for the LoCal type system (§2.2.1). *)
 (* ================================================================= *)
 
-(* Shorthand for the only type former. *)
-Definition located_type : Type := ty.
-Notation LocTy := loc_ty.
 Notation ELet := e_let.
 
 (* ---- Environments in the judgment  Γ; Σ; C; A; N ⊢ A'; N'; e : τ ---- *)
+(* Each environment is represented as a left-biased finite-map encoding,
+   matching the thesis environments Γ, Σ, C, A, and N. *)
 
-Definition type_env    : Type := list (term_var * located_type). (* Γ *)
-Definition store_type  : Type := list (laddr * tycon).           (* Σ *)
-Definition conloc_env  : Type := list (laddr * loc_exp).         (* C *)
+Definition store_entry : Type := (laddr * tycon)%type.
+Definition conloc_entry : Type := (laddr * loc_exp)%type.
+
+Definition type_env    : Type := list term_binding. (* Γ *)
+Definition store_type  : Type := list store_entry.  (* Σ *)
+Definition conloc_env  : Type := list conloc_entry. (* C *)
 
 Inductive alloc_ptr : Type :=
   | AP_None
   | AP_Loc : laddr -> alloc_ptr.
 
-Definition alloc_env   : Type := list (region_var * alloc_ptr).  (* A *)
+Definition alloc_entry : Type := (region_var * alloc_ptr)%type.
+
+Definition alloc_env   : Type := list alloc_entry.               (* A *)
 Definition nursery     : Type := list laddr.                     (* N *)
 
 (* ---- Global contexts (not threaded through the judgment) ---- *)
@@ -64,7 +68,7 @@ Definition remove_nursery (N0 : nursery) (lr : laddr) : nursery :=
   filter (fun x => if laddr_eq_dec x lr then false else true) N0.
 
 (* Extend type_env with a list of bindings (for pattern branches). *)
-Fixpoint extend_tenv_list (G : type_env) (binds : list (term_var * located_type))
+Fixpoint extend_tenv_list (G : type_env) (binds : list term_binding)
   : type_env :=
   match binds with
   | nil => G
@@ -73,16 +77,16 @@ Fixpoint extend_tenv_list (G : type_env) (binds : list (term_var * located_type)
 
 (* Extract store-type entries from pattern bindings:
    (x, T@l^r) ↦ ((l,r), T). *)
-Definition bind_to_store_entry (b : term_var * ty) : laddr * tycon :=
+Definition bind_to_store_entry (b : term_binding) : store_entry :=
   match snd b with
   | loc_ty tc lv rv => ((lv, rv), tc)
   end.
 
-Definition binds_to_store_entries (binds : list (term_var * ty))
-  : list (laddr * tycon) :=
+Definition binds_to_store_entries (binds : list term_binding)
+  : list store_entry :=
   map bind_to_store_entry binds.
 
-Fixpoint extend_store_list (S0 : store_type) (entries : list (laddr * tycon))
+Fixpoint extend_store_list (S0 : store_type) (entries : list store_entry)
   : store_type :=
   match entries with
   | nil => S0
@@ -90,10 +94,10 @@ Fixpoint extend_store_list (S0 : store_type) (entries : list (laddr * tycon))
   end.
 
 (* Construct initial Γ and Σ from a parameter list (for T-FunctionDef). *)
-Definition params_to_tenv (params : list (term_var * located_type))
+Definition params_to_tenv (params : list term_binding)
   : type_env := params.
 
-Definition params_to_store (params : list (term_var * located_type))
+Definition params_to_store (params : list term_binding)
   : store_type := map bind_to_store_entry params.
 
 (* Pattern coverage: every constructor of type tc in DI has a pattern. *)
@@ -351,7 +355,7 @@ with pats_have_type :
    [+ location-param correspondence — see thesis] *)
 Inductive fdecl_has_type : fun_env -> datacon_info -> fdecl -> Prop :=
   | T_FunctionDef :
-      forall FDs DI f locs (named_args : list (term_var * ty)) out regions body
+      forall FDs DI f locs (named_args : list term_binding) out regions body
              N' tc_out l_out r_out,
         In (FunDecl f locs named_args out regions body) FDs ->
         out = LocTy tc_out l_out r_out ->

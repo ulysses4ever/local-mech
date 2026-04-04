@@ -31,12 +31,18 @@ Inductive loc_exp : Type :=
 Inductive ty : Type :=
   | loc_ty : tycon -> loc_var -> region_var -> ty.
 
+(* The thesis writes types as T @ l^r; we expose that terminology here so
+   every module shares the same surface vocabulary. *)
+Definition located_type : Type := ty.
+Notation LocTy := loc_ty.
+Definition term_binding : Type := (term_var * located_type)%type.
+
 Inductive val : Type :=
   | v_var : term_var -> val
   | v_cloc : region_var -> nat -> loc_var -> region_var -> val.
 
 Inductive pat : Type :=
-  | pat_clause : datacon -> list (term_var * ty) -> expr -> pat
+  | pat_clause : datacon -> list term_binding -> expr -> pat
 with expr : Type :=
   | e_val : val -> expr
   | e_app : fun_var -> list (loc_var * region_var) -> list val -> expr
@@ -52,8 +58,8 @@ Inductive datatype_decl : Type :=
 Inductive fdecl : Type :=
   | FunDecl : fun_var
               -> list (loc_var * region_var)   (* location params  *)
-              -> list (term_var * ty)          (* named value params *)
-              -> ty                            (* return type *)
+              -> list term_binding             (* named value params *)
+              -> located_type                  (* return type *)
               -> list region_var               (* region params *)
               -> expr                          (* body *)
               -> fdecl.
@@ -152,10 +158,10 @@ Definition ex_tree_case : expr :=
 
 (* Helpers on pattern bindings — used by both typing and dynamic rules. *)
 
-Definition pat_field_tycons (binds : list (term_var * ty)) : list tycon :=
+Definition pat_field_tycons (binds : list term_binding) : list tycon :=
   List.map (fun '(_, loc_ty T _ _) => T) binds.
 
-Definition pat_term_vars (binds : list (term_var * ty)) : list term_var :=
+Definition pat_term_vars (binds : list term_binding) : list term_var :=
   List.map fst binds.
 
 End LoCalSyntax.

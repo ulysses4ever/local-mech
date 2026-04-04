@@ -195,7 +195,7 @@ Definition subst_loc_in_locexp
 Definition subst_loc_in_ty
     (lo : loc_var) (ro : region_var)
     (ln : loc_var) (rn : region_var)
-    (t : ty) : ty :=
+    (t : located_type) : located_type :=
   match t with
   | loc_ty T l r => loc_ty T (subst_lvar lo ln l) (subst_rvar ro rn r)
   end.
@@ -219,7 +219,7 @@ Definition subst_loc_in_laddr
 Definition subst_loc_in_bind
     (lo : loc_var) (ro : region_var)
     (ln : loc_var) (rn : region_var)
-    (b : term_var * ty) : term_var * ty :=
+    (b : term_binding) : term_binding :=
   (fst b, subst_loc_in_ty lo ro ln rn (snd b)).
 
 (* Substitute location l_new^r_new for l_old^r_old throughout
@@ -339,7 +339,7 @@ Inductive field_starts :
    Each binding (x, T@l^r) at field start index i in region rc
    becomes value ⟨rc, i⟩^(l^r). *)
 Fixpoint build_cloc_vals (rc : region_var)
-    (binds : list (term_var * ty)) (indices : list nat) : list val :=
+    (binds : list term_binding) (indices : list nat) : list val :=
   match binds, indices with
   | (_, loc_ty _ l r) :: binds', i :: indices' =>
       v_cloc rc i l r :: build_cloc_vals rc binds' indices'
@@ -350,7 +350,7 @@ Fixpoint build_cloc_vals (rc : region_var)
    Each binding (_, T@l^r) at field start index i in region rc
    adds mapping (l,r) ↦ (rc, i). *)
 Fixpoint extend_loc_fields (M : loc_map) (rc : region_var)
-    (binds : list (term_var * ty)) (indices : list nat) : loc_map :=
+    (binds : list term_binding) (indices : list nat) : loc_map :=
   match binds, indices with
   | (_, loc_ty _ l r) :: binds', i :: indices' =>
       extend_loc_fields (extend_loc M (l, r) (rc, i)) rc binds' indices'
