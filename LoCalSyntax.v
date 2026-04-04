@@ -260,6 +260,36 @@ Definition pat_store_entries (binds : list (term_var * ty))
     : list (laddr * tycon) :=
   List.map bind_store_entry binds.
 
+Definition val_term_vars (v0 : val) : list term_var :=
+  match v0 with
+  | v_var x => [x]
+  | v_cloc _ _ _ _ => nil
+  end.
+
+Definition val_symbolic_laddrs (v0 : val) : list laddr :=
+  match v0 with
+  | v_var _ => nil
+  | v_cloc _ _ l r => [(l, r)]
+  end.
+
+Definition val_symbolic_regions (v0 : val) : list region_var :=
+  match v0 with
+  | v_var _ => nil
+  | v_cloc _ _ _ r => [r]
+  end.
+
+Definition vals_term_vars (vs : list val) : list term_var :=
+  flat_map val_term_vars vs.
+
+Definition vals_symbolic_laddrs (vs : list val) : list laddr :=
+  flat_map val_symbolic_laddrs vs.
+
+Definition vals_symbolic_regions (vs : list val) : list region_var :=
+  flat_map val_symbolic_regions vs.
+
+Definition loc_arg_regions (loc_args : list laddr) : list region_var :=
+  List.map snd loc_args.
+
 (* The thesis assumes an implicit uniquify discipline:
    all binders for values, locations, and regions are distinct.
    We expose the corresponding binder collections here so the rest of the
@@ -361,6 +391,24 @@ Definition fdecl_binders_unique (fd : fdecl) : Prop :=
   NoDup (fdecl_bound_term_vars fd)
   /\ NoDup (fdecl_bound_laddrs fd)
   /\ NoDup (fdecl_bound_regions fd).
+
+(* Freshen(FD) in the thesis discharges exactly this no-capture
+   condition before function-body substitution.  We expose the
+   side condition at the shared syntax layer so both the static and
+   dynamic developments can state it explicitly. *)
+Definition app_subst_fresh
+    (body : expr) (loc_args : list laddr) (val_args : list val) : Prop :=
+  (forall x,
+      In x (vals_term_vars val_args) ->
+      ~ In x (expr_bound_term_vars body))
+  /\
+  (forall lr,
+      In lr (loc_args ++ vals_symbolic_laddrs val_args) ->
+      ~ In lr (expr_bound_laddrs body))
+  /\
+  (forall r,
+      In r (loc_arg_regions loc_args ++ vals_symbolic_regions val_args) ->
+      ~ In r (expr_bound_regions body)).
 
 Definition program_binders_unique (p : program) : Prop :=
   Forall fdecl_binders_unique (prog_fdecls p)

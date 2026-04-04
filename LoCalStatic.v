@@ -54,8 +54,14 @@ Definition extend_store (S0 : store_type) (lr : laddr) (tc : tycon)
 Definition extend_conloc (C0 : conloc_env) (lr : laddr) (le : loc_exp)
   : conloc_env := cons (lr, le) C0.
 
+Definition remove_alloc_region (A0 : alloc_env) (r : region_var) : alloc_env :=
+  filter
+    (fun entry =>
+       if region_var_eq_dec (fst entry) r then false else true)
+    A0.
+
 Definition extend_alloc (A0 : alloc_env) (r : region_var) (ap : alloc_ptr)
-  : alloc_env := cons (r, ap) A0.
+  : alloc_env := cons (r, ap) (remove_alloc_region A0 r).
 
 Definition extend_nursery (N0 : nursery) (lr : laddr) : nursery :=
   cons lr N0.
@@ -126,6 +132,49 @@ Definition bind_uses_formal_locs (locs : list laddr) (b : term_var * ty) : Prop 
 Definition instantiated_param_type
     (formals actuals : list laddr) (param : term_var * ty) : located_type :=
   subst_locs_in_ty formals actuals (snd param).
+
+Definition fresh_region (A : alloc_env) (r : region_var) : Prop :=
+  forall ap, ~ In (r, ap) A.
+
+Definition fresh_laddr_store (S0 : store_type) (lr : laddr) : Prop :=
+  forall tc, ~ In (lr, tc) S0.
+
+Definition fresh_laddr_conloc (C : conloc_env) (lr : laddr) : Prop :=
+  forall le, ~ In (lr, le) C.
+
+Definition store_laddrs (S0 : store_type) : list laddr :=
+  List.map fst S0.
+
+Definition locexp_laddrs (le : loc_exp) : list laddr :=
+  match le with
+  | LE_Start _ => nil
+  | LE_Next l r => [(l, r)]
+  | LE_After _ l r => [(l, r)]
+  end.
+
+Definition conloc_support (C : conloc_env) : list laddr :=
+  flat_map
+    (fun entry =>
+       let '(lr, le) := entry in
+       lr :: locexp_laddrs le)
+    C.
+
+Definition alloc_laddrs (A : alloc_env) : list laddr :=
+  flat_map
+    (fun entry =>
+       match snd entry with
+       | AP_None => nil
+       | AP_Loc lr => [lr]
+       end)
+    A.
+
+Definition letloc_fresh_ctx
+    (S0 : store_type) (C : conloc_env) (A : alloc_env) (N : nursery)
+    (lr : laddr) : Prop :=
+  ~ In lr (store_laddrs S0)
+  /\ ~ In lr (conloc_support C)
+  /\ ~ In lr (alloc_laddrs A)
+  /\ ~ In lr N.
 
 (* Pattern coverage: every constructor of type tc in DI has a pattern. *)
 Definition pats_cover (DI : datacon_info) (tc : tycon) (pats : list pat) : Prop :=
@@ -199,6 +248,7 @@ Inductive has_type :
      Γ;Σ;C;A;N ⊢ A'';N'; letregion r in e : τ *)
   | T_LRegion :
       forall FDs DI G S0 C A N A' N' r e t,
+        fresh_region A r ->
         has_type FDs DI G S0 C (extend_alloc A r AP_None) N A' N' e t ->
         has_type FDs DI G S0 C A N A' N' (e_letregion r e) t
 

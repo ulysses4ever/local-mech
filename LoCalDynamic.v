@@ -255,54 +255,6 @@ Fixpoint subst_locs
   | _, _ => e
   end.
 
-Definition val_term_vars (v0 : val) : list term_var :=
-  match v0 with
-  | v_var x => [x]
-  | v_cloc _ _ _ _ => nil
-  end.
-
-Definition val_symbolic_laddrs (v0 : val) : list laddr :=
-  match v0 with
-  | v_var _ => nil
-  | v_cloc _ _ l r => [(l, r)]
-  end.
-
-Definition val_symbolic_regions (v0 : val) : list region_var :=
-  match v0 with
-  | v_var _ => nil
-  | v_cloc _ _ _ r => [r]
-  end.
-
-Definition vals_term_vars (vs : list val) : list term_var :=
-  flat_map val_term_vars vs.
-
-Definition vals_symbolic_laddrs (vs : list val) : list laddr :=
-  flat_map val_symbolic_laddrs vs.
-
-Definition vals_symbolic_regions (vs : list val) : list region_var :=
-  flat_map val_symbolic_regions vs.
-
-Definition loc_arg_regions (loc_args : list laddr) : list region_var :=
-  List.map snd loc_args.
-
-(* Freshen(FD) in the thesis packages exactly this no-capture side
-   condition for D_App: actual term/location/region names must be
-   disjoint from binders internal to the callee body before we apply
-   the named substitutions below. *)
-Definition app_subst_fresh
-    (body : expr) (loc_args : list laddr) (val_args : list val) : Prop :=
-  (forall x,
-      In x (vals_term_vars val_args) ->
-      ~ In x (expr_bound_term_vars body))
-  /\
-  (forall lr,
-      In lr (loc_args ++ vals_symbolic_laddrs val_args) ->
-      ~ In lr (expr_bound_laddrs body))
-  /\
-  (forall r,
-      In r (loc_arg_regions loc_args ++ vals_symbolic_regions val_args) ->
-      ~ In r (expr_bound_regions body)).
-
 (* ================================================================= *)
 (* End-witness relation  (thesis §2.2.2 and Appendix §end-witness)   *)
 (*                                                                   *)
