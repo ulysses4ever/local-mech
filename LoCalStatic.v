@@ -196,6 +196,11 @@ Definition pat_bindings_wf
   /\ NoDup (pat_laddrs binds)
   /\ Forall (fun b => bind_region_var b = r_scrut) binds.
 
+Definition pat_bindings_fresh_ctx
+    (S0 : store_type) (C : conloc_env) (A : alloc_env) (N : nursery)
+    (binds : list (term_var * ty)) : Prop :=
+  Forall (letloc_fresh_ctx S0 C A N) (pat_laddrs binds).
+
 Definition pats_case_wf
     (r_scrut : region_var)
     (ps : list pat) : Prop :=
@@ -203,6 +208,16 @@ Definition pats_case_wf
     (fun p =>
        match p with
        | pat_clause _ binds _ => pat_bindings_wf r_scrut binds
+       end)
+    ps.
+
+Definition pats_case_fresh_ctx
+    (S0 : store_type) (C : conloc_env) (A : alloc_env) (N : nursery)
+    (ps : list pat) : Prop :=
+  Forall
+    (fun p =>
+       match p with
+       | pat_clause _ binds _ => pat_bindings_fresh_ctx S0 C A N binds
        end)
     ps.
 
@@ -639,7 +654,7 @@ Proof.
     [ left; reflexivity        (* A(r) = (l,r) *)
     | left; reflexivity        (* (l,r) ∈ N *)
     | shelve                   (* (l_a,r) ∉ N'' — deferred *)
-    | intro H; congruence      (* (l,r) ≠ (l_a,r) *)
+    | intro H; congruence      (* (l_a,r) ≠ (l,r) *)
     | idtac ].
   (* Line 3: let x : T@l_a^r = Leaf(l_a^r) — T_Let *)
   eapply T_Let.
@@ -657,7 +672,7 @@ Proof.
       | left; reflexivity      (* Σ((l_a,r)) = T *)
       | cbn; intros [H|[]]; congruence (* (l_a,r) ∉ [(l,r)] *)
       | shelve                 (* (l_b,r) ∉ N'' — deferred *)
-      | intro H; congruence    (* (l,r) ≠ (l_b,r) *)
+      | intro H; congruence    (* (l_b,r) ≠ (l,r) *)
       | idtac ].
     (* Line 5: let y : T@l_b^r = Leaf(l_b^r) — T_Let *)
     eapply T_Let.

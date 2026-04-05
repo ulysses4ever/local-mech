@@ -200,20 +200,72 @@ Definition nursery_locmap_injective
     lookup_loc M lr2 = Some cl ->
     lr1 = lr2.
 
-Definition pat_bindings_fresh_ctx
-    (Sigma : store_type) (C : conloc_env) (A : alloc_env) (N : nursery)
-    (binds : list (term_var * ty)) : Prop :=
-  Forall (letloc_fresh_ctx Sigma C A N) (pat_laddrs binds).
+Definition nursery_regions_tracked
+    (A : alloc_env)
+    (N : nursery) : Prop :=
+  (* Strengthening beyond the thesis text:
+     every live nursery location belongs to a region whose current
+     allocation focus is tracked in A.  This is the runtime-side fact
+     needed to argue that introducing a fresh region or advancing a
+     region focus cannot silently alias an older live nursery cell. *)
+  forall l r,
+    In (l, r) N ->
+    exists l_focus, In (r, AP_Loc (l_focus, r)) A.
 
-Definition pats_case_fresh_ctx
-    (Sigma : store_type) (C : conloc_env) (A : alloc_env) (N : nursery)
-    (ps : list pat) : Prop :=
-  Forall
-    (fun p =>
-       match p with
-       | pat_clause _ binds _ => pat_bindings_fresh_ctx Sigma C A N binds
-       end)
-    ps.
+Definition nursery_focus_bounded
+    (DI : datacon_info)
+    (Sigma : store_type)
+    (A : alloc_env)
+    (N : nursery)
+    (M : loc_map)
+    (S : store) : Prop :=
+  (* Companion strengthening:
+     every current allocation focus bounds the live nursery cells in
+     its region, either directly when the focus itself is still live in
+     N, or via its end witness when the focus has already been
+     materialized in Sigma.  This matches how LoCal uses A:
+     after D_DataCon the focus intentionally moves back to the
+     constructor root, while future allocation resumes at its end.
+
+     Meta-theory note:
+     the earlier index-only formulation was too strong for D_DataCon,
+     because the focus may point at a materialized root whose end is
+     strictly beyond its starting address. *)
+  forall r l_focus i_focus l i,
+    In (r, AP_Loc (l_focus, r)) A ->
+    lookup_loc M (l_focus, r) = Some (r, i_focus) ->
+    In (l, r) N ->
+    lookup_loc M (l, r) = Some (r, i) ->
+    (In (l_focus, r) N /\ i <= i_focus)
+    \/
+    (exists T j,
+        In ((l_focus, r), T) Sigma /\
+        end_witness DI S (r, i_focus) T (r, j) /\
+        i < j).
+
+Definition alloc_env_functional
+    (A : alloc_env) : Prop :=
+  (* Proof-side refinement:
+     the implementation updates A with extend_alloc, so semantically A
+     is used as a finite map from regions to their current allocation
+     focus.  Making that extensionality explicit avoids reasoning as if
+     both AP_None and AP_Loc could coexist for the same region. *)
+  forall r ap1 ap2,
+    In (r, ap1) A ->
+    In (r, ap2) A ->
+    ap1 = ap2.
+
+Definition runtime_nursery_wf
+    (DI : datacon_info)
+    (Sigma : store_type)
+    (A : alloc_env)
+    (N : nursery)
+    (M : loc_map)
+    (S : store) : Prop :=
+  alloc_env_functional A
+  /\ nursery_locmap_injective N M
+  /\ nursery_regions_tracked A N
+  /\ nursery_focus_bounded DI Sigma A N M S.
 
 (* ================================================================= *)
 (* In_lookup_fdecl: membership in the function list implies lookup    *)
@@ -565,6 +617,50 @@ Proof.
   apply in_remove_alloc_region_preserved; assumption.
 Qed.
 
+Lemma alloc_env_functional_remove_alloc_region :
+  forall A r,
+    alloc_env_functional A ->
+    alloc_env_functional (remove_alloc_region A r).
+Proof.
+  intros A r Hfun r' ap1 ap2 Hin1 Hin2.
+  destruct (in_remove_alloc_region_inv _ _ _ _ Hin1) as [Hin1A _].
+  destruct (in_remove_alloc_region_inv _ _ _ _ Hin2) as [Hin2A _].
+  eapply Hfun; eauto.
+Qed.
+
+Lemma alloc_env_functional_extend_alloc :
+  forall A r ap,
+    alloc_env_functional A ->
+    alloc_env_functional (extend_alloc A r ap).
+Proof.
+  intros A r ap Hfun r' ap1 ap2 Hin1 Hin2.
+  simpl in Hin1, Hin2.
+  destruct Hin1 as [Heq1 | Hin1].
+  - inversion Heq1; subst r' ap1.
+    destruct Hin2 as [Heq2 | Hin2].
+    + inversion Heq2. reflexivity.
+    + exfalso.
+      destruct (in_remove_alloc_region_inv _ _ _ _ Hin2) as [_ Hneq].
+      contradiction.
+  - destruct Hin2 as [Heq2 | Hin2].
+    + inversion Heq2; subst r' ap2.
+      exfalso.
+      destruct (in_remove_alloc_region_inv _ _ _ _ Hin1) as [_ Hneq].
+      contradiction.
+    + eapply alloc_env_functional_remove_alloc_region; eauto.
+Qed.
+
+Lemma alloc_env_functional_singleton :
+  forall r ap,
+    alloc_env_functional [(r, ap)].
+Proof.
+  intros r ap r' ap1 ap2 Hin1 Hin2.
+  simpl in Hin1, Hin2.
+  destruct Hin1 as [Heq1 | []].
+  destruct Hin2 as [Heq2 | []].
+  inversion Heq1; inversion Heq2; subst; reflexivity.
+Qed.
+
 Lemma in_extend_nursery_inv :
   forall N lr lr',
     In lr' (extend_nursery N lr) ->
@@ -645,6 +741,86 @@ Proof.
   intros N lr Hin.
   destruct (in_remove_nursery_inv _ _ _ Hin) as [_ Hneq].
   contradiction.
+Qed.
+
+Lemma nursery_locmap_injective_remove_nursery :
+  forall N M lr,
+    nursery_locmap_injective N M ->
+    nursery_locmap_injective (remove_nursery N lr) M.
+Proof.
+  intros N M lr Hinj lr1 lr2 cl Hin1 Hin2 Hlk1 Hlk2.
+  eapply Hinj; eauto.
+  - eapply in_remove_nursery_inv in Hin1. exact (proj1 Hin1).
+  - eapply in_remove_nursery_inv in Hin2. exact (proj1 Hin2).
+Qed.
+
+Lemma nursery_regions_tracked_remove_nursery :
+  forall A N lr,
+    nursery_regions_tracked A N ->
+    nursery_regions_tracked A (remove_nursery N lr).
+Proof.
+  intros A N lr Htracked l r Hin.
+  eapply Htracked.
+  eapply in_remove_nursery_inv in Hin.
+  exact (proj1 Hin).
+Qed.
+
+Lemma nursery_focus_bounded_remove_nursery :
+  forall DI Sigma A N M S l r,
+    nursery_focus_bounded DI Sigma A N M S ->
+    ~ In (r, AP_Loc (l, r)) A ->
+    nursery_focus_bounded DI Sigma A (remove_nursery N (l, r)) M S.
+Proof.
+  intros DI Sigma A N M S l r Hbound Hnotfocus
+         r0 l_focus i_focus l0 i0 Hfocus Hlkfocus Hin Hlk.
+  destruct (in_remove_nursery_inv _ _ _ Hin) as [HinN Hneq_nur].
+  destruct (Hbound _ _ _ _ _ Hfocus Hlkfocus HinN Hlk)
+    as [[HinFocus Hle] | [T [j [HSigma [Hew Hlt]]]]].
+  - left. split.
+    + eapply in_remove_nursery_preserved; eauto.
+      intro Heq.
+      inversion Heq; subst.
+      apply Hnotfocus. exact Hfocus.
+    + exact Hle.
+  - right. exists T, j. repeat split; assumption.
+Qed.
+
+Lemma fresh_region_no_nursery_region :
+  forall A N r,
+    fresh_region A r ->
+    nursery_regions_tracked A N ->
+    forall l, ~ In (l, r) N.
+Proof.
+  intros A N r Hfresh Htracked l HinN.
+  destruct (Htracked l r HinN) as [l_focus HinA].
+  eapply Hfresh.
+  exact HinA.
+Qed.
+
+Lemma ap_none_no_nursery_region :
+  forall A N r,
+    alloc_env_functional A ->
+    nursery_regions_tracked A N ->
+    In (r, AP_None) A ->
+    forall l, ~ In (l, r) N.
+Proof.
+  intros A N r Hfun Htracked Hnone l HinN.
+  destruct (Htracked l r HinN) as [l_focus Hfocus].
+  specialize (Hfun r AP_None (AP_Loc (l_focus, r)) Hnone Hfocus).
+  discriminate.
+Qed.
+
+Lemma runtime_nursery_wf_remove_nursery :
+  forall DI Sigma A N M S l r,
+    runtime_nursery_wf DI Sigma A N M S ->
+    ~ In (r, AP_Loc (l, r)) A ->
+    runtime_nursery_wf DI Sigma A (remove_nursery N (l, r)) M S.
+Proof.
+  intros DI Sigma A N M S l r [Hfun [Hinj [Htracked Hbound]]] Hnotfocus.
+  repeat split; eauto.
+  - eapply nursery_locmap_injective_remove_nursery; eauto.
+  - eapply nursery_regions_tracked_remove_nursery; eauto.
+  - eapply nursery_focus_bounded_remove_nursery; eauto.
 Qed.
 
 Lemma store_wf_remove_nursery :
@@ -905,8 +1081,62 @@ with pats_have_type_ind' := Induction for pats_have_type Sort Prop.
 Combined Scheme typing_mutind
   from has_type_ind', pat_has_type_ind', pats_have_type_ind'.
 
+Fixpoint expr_term_capture_safe (e : expr) : Prop :=
+  match e with
+  | e_val _ => True
+  | e_app _ _ _ => True
+  | e_datacon _ _ _ _ => True
+  | e_let _ _ e1 e2 =>
+      expr_term_capture_safe e1
+      /\ expr_term_capture_safe e2
+      /\ (forall x,
+            In x (expr_occurs_term_vars e1) ->
+            ~ In x (expr_bound_term_vars e2))
+  | e_letloc _ _ _ body => expr_term_capture_safe body
+  | e_letregion _ body => expr_term_capture_safe body
+  | e_case _ pats =>
+      let fix pats_safe (ps : list pat) : Prop :=
+        match ps with
+        | nil => True
+        | pat_clause _ _ body :: ps' =>
+            expr_term_capture_safe body /\ pats_safe ps'
+        end
+      in pats_safe pats
+  end.
+
+Definition pat_term_capture_safe (p : pat) : Prop :=
+  match p with
+  | pat_clause _ _ body => expr_term_capture_safe body
+  end.
+
+Fixpoint pats_term_capture_safe (ps : list pat) : Prop :=
+  match ps with
+  | nil => True
+  | p :: ps' => pat_term_capture_safe p /\ pats_term_capture_safe ps'
+  end.
+
 Definition gamma_binders_disjoint (G : type_env) (e : expr) : Prop :=
   forall x t, In (x, t) G -> ~ In x (expr_bound_term_vars e).
+
+Lemma gamma_binders_disjoint_nil :
+  forall e,
+    gamma_binders_disjoint nil e.
+Proof.
+  intros e x t Hin.
+  inversion Hin.
+Qed.
+
+Lemma expr_term_capture_safe_let_inv :
+  forall x T e1 e2,
+    expr_term_capture_safe (e_let x T e1 e2) ->
+    expr_term_capture_safe e1
+    /\ expr_term_capture_safe e2
+    /\ (forall y, In y (expr_occurs_term_vars e1) -> ~ In y (expr_bound_term_vars e2)).
+Proof.
+  intros x T e1 e2 Hsafe.
+  simpl in Hsafe.
+  exact Hsafe.
+Qed.
 
 (* The thesis treats fresh location/region binders as an implicit
    side-condition.  We keep the typing rules monotone, and instead
@@ -2803,6 +3033,369 @@ Proof.
     + eapply Hdisj2; eauto.
 Qed.
 
+Lemma runtime_nursery_wf_letregion :
+  forall DI Sigma A N M S r,
+    runtime_nursery_wf DI Sigma A N M S ->
+    fresh_region A r ->
+    runtime_nursery_wf DI Sigma (extend_alloc A r AP_None) N M S.
+Proof.
+  intros DI Sigma A N M S r [Hfun [Hinj [Htracked Hbound]]] Hfresh.
+  repeat split.
+  - apply alloc_env_functional_extend_alloc. exact Hfun.
+  - exact Hinj.
+  - intros l r0 HinN.
+    destruct (region_var_eq_dec r0 r) as [Heq | Hneq].
+    + subst. exfalso.
+      eapply fresh_region_no_nursery_region; eauto.
+    + destruct (Htracked l r0 HinN) as [l_focus Hfocus].
+      exists l_focus. eapply in_extend_alloc_old; eauto.
+  - intros r0 l_focus i_focus l i Hfocus Hlkfocus HinN Hlk.
+    simpl in Hfocus.
+    destruct Hfocus as [Heq | Hfocus_old].
+    + inversion Heq.
+    + destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [HfocusA Hneq].
+      eapply Hbound; eauto.
+Qed.
+
+Lemma runtime_nursery_wf_letloc_start :
+  forall DI Sigma C A N M S l r,
+    runtime_nursery_wf DI Sigma A N M S ->
+    store_wf DI Sigma C A N M S ->
+    letloc_fresh_ctx Sigma C A N (l, r) ->
+    In (r, AP_None) A ->
+    runtime_nursery_wf DI Sigma
+                       (extend_alloc A r (AP_Loc (l, r)))
+                       (extend_nursery N (l, r))
+                       (extend_loc M (l, r) (r, 0))
+                       S.
+Proof.
+  intros DI Sigma C A N M S l r
+         [Hfun [Hinj [Htracked Hbound]]]
+         Hwf [_ [_ [_ HfreshN]]] Hnone.
+  destruct Hwf as [_ [_ [Halloc _]]].
+  destruct Halloc as [_ [_ [Hwrite _]]].
+  repeat split.
+  - apply alloc_env_functional_extend_alloc. exact Hfun.
+  - intros lr1 lr2 cl Hin1 Hin2 Hlk1 Hlk2.
+    destruct (in_extend_nursery_inv _ _ _ Hin1) as [Heq1 | Hin1old];
+    destruct (in_extend_nursery_inv _ _ _ Hin2) as [Heq2 | Hin2old].
+    + subst. reflexivity.
+    + subst lr1. rewrite lookup_loc_extend_eq in Hlk1. inversion Hlk1; subst cl.
+      assert (Hneq : lr2 <> (l, r)).
+      { intro Heq. apply HfreshN. subst. exact Hin2old. }
+      rewrite lookup_loc_extend_neq in Hlk2 by exact Hneq.
+      destruct lr2 as [l2 r2].
+      destruct (Hwrite l2 r2 Hin2old) as [i2 [Hnur_lookup _]].
+      rewrite Hnur_lookup in Hlk2. inversion Hlk2; subst r2 i2.
+      exfalso.
+      eapply (ap_none_no_nursery_region A N r Hfun Htracked Hnone l2 Hin2old).
+    + subst lr2. rewrite lookup_loc_extend_eq in Hlk2. inversion Hlk2; subst cl.
+      assert (Hneq : lr1 <> (l, r)).
+      { intro Heq. apply HfreshN. subst. exact Hin1old. }
+      rewrite lookup_loc_extend_neq in Hlk1 by exact Hneq.
+      destruct lr1 as [l1 r1].
+      destruct (Hwrite l1 r1 Hin1old) as [i1 [Hnur_lookup _]].
+      rewrite Hnur_lookup in Hlk1. inversion Hlk1; subst r1 i1.
+      exfalso.
+      eapply (ap_none_no_nursery_region A N r Hfun Htracked Hnone l1 Hin1old).
+    + assert (Hneq1 : lr1 <> (l, r)).
+      { intro Heq. apply HfreshN. subst. exact Hin1old. }
+      assert (Hneq2 : lr2 <> (l, r)).
+      { intro Heq. apply HfreshN. subst. exact Hin2old. }
+      rewrite lookup_loc_extend_neq in Hlk1 by exact Hneq1.
+      rewrite lookup_loc_extend_neq in Hlk2 by exact Hneq2.
+      eapply Hinj; eauto.
+  - intros l0 r0 HinN.
+    destruct (in_extend_nursery_inv _ _ _ HinN) as [Heq | HinOld].
+    + inversion Heq; subst. exists l. apply in_extend_alloc_new.
+    + destruct (region_var_eq_dec r0 r) as [Heq | Hneq].
+      * subst. exfalso.
+        eapply ap_none_no_nursery_region; eauto.
+      * destruct (Htracked l0 r0 HinOld) as [l_focus Hfocus].
+        exists l_focus. eapply in_extend_alloc_old; eauto.
+  - intros r0 l_focus i_focus l0 i0 Hfocus Hlkfocus HinN Hlk.
+    destruct (in_extend_nursery_inv _ _ _ HinN) as [HeqN | HinOld].
+    + inversion HeqN; subst.
+      simpl in Hfocus.
+      destruct Hfocus as [Heq | Hfocus_old].
+      * inversion Heq; subst.
+        rewrite lookup_loc_extend_eq in Hlkfocus.
+        inversion Hlkfocus; subst.
+        rewrite lookup_loc_extend_eq in Hlk.
+        inversion Hlk; subst.
+        left. split.
+        -- simpl. left. reflexivity.
+        -- lia.
+      * destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [_ Hneq].
+        contradiction.
+    + simpl in Hfocus.
+      destruct Hfocus as [Heq | Hfocus_old].
+      * inversion Heq; subst.
+        exfalso. eapply ap_none_no_nursery_region; eauto.
+      * destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [HfocusA Hneq].
+        assert (Hneq_focus : (l_focus, r0) <> (l, r)).
+        { intro Heq. inversion Heq; subst. contradiction. }
+        assert (Hneq_nur : (l0, r0) <> (l, r)).
+        { intro Heq_nur. inversion Heq_nur; subst. contradiction. }
+        rewrite lookup_loc_extend_neq in Hlkfocus by exact Hneq_focus.
+        rewrite lookup_loc_extend_neq in Hlk by exact Hneq_nur.
+        destruct (Hbound _ _ _ _ _ HfocusA Hlkfocus HinOld Hlk)
+          as [[HinFocus Hle] | [T [j [HSigma [Hew Hlt]]]]].
+        -- left. split.
+           ++ simpl. right. exact HinFocus.
+           ++ exact Hle.
+        -- right. exists T, j. repeat split; assumption.
+Qed.
+
+Lemma runtime_nursery_wf_letloc_tag :
+  forall DI Sigma C A N M S l lprev r i,
+    runtime_nursery_wf DI Sigma A N M S ->
+    store_wf DI Sigma C A N M S ->
+    letloc_fresh_ctx Sigma C A N (l, r) ->
+    In (r, AP_Loc (lprev, r)) A ->
+    In (lprev, r) N ->
+    lookup_loc M (lprev, r) = Some (r, i) ->
+    runtime_nursery_wf DI Sigma
+                       (extend_alloc A r (AP_Loc (l, r)))
+                       (extend_nursery N (l, r))
+                       (extend_loc M (l, r) (r, i + 1))
+                       S.
+Proof.
+  intros DI Sigma C A N M S l lprev r i
+         [Hfun [Hinj [Htracked Hbound]]]
+         Hwf [_ [_ [_ HfreshN]]] Hfocus_prev Hnur_prev Hlookup_prev.
+  destruct Hwf as [_ [_ [Halloc [Hdisj1 _]]]].
+  destruct Halloc as [_ [_ [Hwrite _]]].
+  assert (Hbound_prev :
+    forall l0 i0,
+      In (l0, r) N ->
+      lookup_loc M (l0, r) = Some (r, i0) ->
+      i0 <= i).
+  { intros l0 i0 HinN HlkN.
+    destruct (Hbound r lprev i l0 i0 Hfocus_prev Hlookup_prev HinN HlkN)
+      as [[HinFocus Hle] | [T [j [HSigma [Hew Hlt]]]]].
+    - exact Hle.
+    - exfalso. eapply (Hdisj1 lprev r T HSigma Hnur_prev).
+  }
+  repeat split.
+  - apply alloc_env_functional_extend_alloc. exact Hfun.
+  - intros lr1 lr2 cl Hin1 Hin2 Hlk1 Hlk2.
+    destruct (in_extend_nursery_inv _ _ _ Hin1) as [Heq1 | Hin1old];
+    destruct (in_extend_nursery_inv _ _ _ Hin2) as [Heq2 | Hin2old].
+    + subst. reflexivity.
+    + subst lr1. rewrite lookup_loc_extend_eq in Hlk1. inversion Hlk1; subst cl.
+      assert (Hneq : lr2 <> (l, r)).
+      { intro Heq. apply HfreshN. subst. exact Hin2old. }
+      rewrite lookup_loc_extend_neq in Hlk2 by exact Hneq.
+      destruct lr2 as [l2 r2].
+      destruct (Hwrite l2 r2 Hin2old) as [i2 [Hnur_lookup _]].
+      assert (Hr2 : r2 = r).
+      { rewrite Hnur_lookup in Hlk2. inversion Hlk2. reflexivity. }
+      subst r2.
+      assert (Hle : i2 <= i) by (eapply Hbound_prev; eauto).
+      rewrite Hnur_lookup in Hlk2. inversion Hlk2; subst i2.
+      lia.
+    + subst lr2. rewrite lookup_loc_extend_eq in Hlk2. inversion Hlk2; subst cl.
+      assert (Hneq : lr1 <> (l, r)).
+      { intro Heq. apply HfreshN. subst. exact Hin1old. }
+      rewrite lookup_loc_extend_neq in Hlk1 by exact Hneq.
+      destruct lr1 as [l1 r1].
+      destruct (Hwrite l1 r1 Hin1old) as [i1 [Hnur_lookup _]].
+      assert (Hr1 : r1 = r).
+      { rewrite Hnur_lookup in Hlk1. inversion Hlk1. reflexivity. }
+      subst r1.
+      assert (Hle : i1 <= i) by (eapply Hbound_prev; eauto).
+      rewrite Hnur_lookup in Hlk1. inversion Hlk1; subst i1.
+      lia.
+    + assert (Hneq1 : lr1 <> (l, r)).
+      { intro Heq. apply HfreshN. subst. exact Hin1old. }
+      assert (Hneq2 : lr2 <> (l, r)).
+      { intro Heq. apply HfreshN. subst. exact Hin2old. }
+      rewrite lookup_loc_extend_neq in Hlk1 by exact Hneq1.
+      rewrite lookup_loc_extend_neq in Hlk2 by exact Hneq2.
+      eapply Hinj; eauto.
+  - intros l0 r0 HinN.
+    destruct (in_extend_nursery_inv _ _ _ HinN) as [Heq | HinOld].
+    + inversion Heq; subst. exists l. apply in_extend_alloc_new.
+    + destruct (region_var_eq_dec r0 r) as [Heq | Hneq].
+      * subst. exists l. apply in_extend_alloc_new.
+      * destruct (Htracked l0 r0 HinOld) as [l_focus Hfocus].
+        exists l_focus. eapply in_extend_alloc_old; eauto.
+  - intros r0 l_focus i_focus l0 i0 Hfocus Hlkfocus HinN Hlk.
+    destruct (in_extend_nursery_inv _ _ _ HinN) as [HeqN | HinOld].
+    + inversion HeqN; subst.
+      simpl in Hfocus.
+      destruct Hfocus as [Heq | Hfocus_old].
+      * inversion Heq; subst.
+        rewrite lookup_loc_extend_eq in Hlkfocus.
+        rewrite lookup_loc_extend_eq in Hlk.
+        inversion Hlkfocus; inversion Hlk; subst.
+        left. split.
+        -- simpl. left. reflexivity.
+        -- lia.
+      * destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [_ Hneq].
+        contradiction.
+    + simpl in Hfocus.
+      destruct Hfocus as [Heq | Hfocus_old].
+      * inversion Heq; subst.
+        assert (Hneq_nur : (l0, r0) <> (l_focus, r0)).
+        { intro Heq_nur. apply HfreshN. inversion Heq_nur; subst. exact HinOld. }
+        rewrite lookup_loc_extend_eq in Hlkfocus.
+        rewrite lookup_loc_extend_neq in Hlk by exact Hneq_nur.
+        inversion Hlkfocus; subst i_focus.
+        assert (Hle : i0 <= i).
+        { eapply Hbound_prev; eauto. }
+        left. split.
+        -- simpl. left. reflexivity.
+        -- lia.
+      * destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [HfocusA Hneq].
+        assert (Hneq_focus : (l_focus, r0) <> (l, r)).
+        { intro Heq. inversion Heq; subst. contradiction. }
+        assert (Hneq_nur : (l0, r0) <> (l, r)).
+        { intro Heq_nur. inversion Heq_nur; subst. contradiction. }
+        rewrite lookup_loc_extend_neq in Hlkfocus by exact Hneq_focus.
+        rewrite lookup_loc_extend_neq in Hlk by exact Hneq_nur.
+        destruct (Hbound _ _ _ _ _ HfocusA Hlkfocus HinOld Hlk)
+          as [[HinFocus Hle] | [T [j [HSigma [Hew Hlt]]]]].
+        -- left. split.
+           ++ simpl. right. exact HinFocus.
+           ++ exact Hle.
+        -- right. exists T, j. repeat split; assumption.
+Qed.
+
+Lemma runtime_nursery_wf_letloc_after :
+  forall DI Sigma C A N M S l l1 r tc_prev i j,
+    runtime_nursery_wf DI Sigma A N M S ->
+    store_wf DI Sigma C A N M S ->
+    letloc_fresh_ctx Sigma C A N (l, r) ->
+    In (r, AP_Loc (l1, r)) A ->
+    In ((l1, r), tc_prev) Sigma ->
+    lookup_loc M (l1, r) = Some (r, i) ->
+    end_witness DI S (r, i) tc_prev (r, j) ->
+    runtime_nursery_wf DI Sigma
+                       (extend_alloc A r (AP_Loc (l, r)))
+                       (extend_nursery N (l, r))
+                       (extend_loc M (l, r) (r, j))
+                       S.
+Proof.
+  intros DI Sigma C A N M S l l1 r tc_prev i j
+         [Hfun [Hinj [Htracked Hbound]]]
+         Hwf [_ [_ [_ HfreshN]]] Hfocus_prev Hsigma_prev Hlookup_prev Hew.
+  destruct Hwf as [_ [_ [Halloc [Hdisj1 Hdisj2]]]].
+  destruct Halloc as [_ [_ [Hwrite _]]].
+  pose proof (end_witness_gt _ _ _ _ _ _ Hew) as Hgt.
+  assert (Hbound_prev :
+    forall l0 i0,
+      In (l0, r) N ->
+      lookup_loc M (l0, r) = Some (r, i0) ->
+      i0 < j).
+  { intros l0 i0 HinN HlkN.
+    destruct (Hbound r l1 i l0 i0 Hfocus_prev Hlookup_prev HinN HlkN)
+      as [[HinFocus Hle] | [T [j0 [HSigma [Hew0 Hlt]]]]].
+    - exfalso. eapply (Hdisj1 l1 r tc_prev Hsigma_prev HinFocus).
+    - assert (HTeq : T = tc_prev).
+      { inversion Hew0; inversion Hew; subst.
+        match goal with
+        | Hh1 : heap_lookup _ _ _ = Some _,
+          Hh2 : heap_lookup _ _ _ = Some _ |- _ =>
+            rewrite Hh1 in Hh2; inversion Hh2; subst
+        end;
+        match goal with
+        | Hd1 : lookup_datacon _ _ = Some (_, _),
+          Hd2 : lookup_datacon _ _ = Some (_, _) |- _ =>
+            rewrite Hd1 in Hd2; inversion Hd2; reflexivity
+        end. }
+      subst T.
+      assert (Hj0 : (r, j0) = (r, j)).
+      { eapply end_witness_functional; eauto. }
+      inversion Hj0; subst. exact Hlt.
+  }
+  repeat split.
+  - apply alloc_env_functional_extend_alloc. exact Hfun.
+  - intros lr1 lr2 cl Hin1 Hin2 Hlk1 Hlk2.
+    destruct (in_extend_nursery_inv _ _ _ Hin1) as [Heq1 | Hin1old];
+    destruct (in_extend_nursery_inv _ _ _ Hin2) as [Heq2 | Hin2old].
+    + subst. reflexivity.
+    + subst lr1. rewrite lookup_loc_extend_eq in Hlk1. inversion Hlk1; subst cl.
+      assert (Hneq : lr2 <> (l, r)).
+      { intro Heq. apply HfreshN. subst. exact Hin2old. }
+      rewrite lookup_loc_extend_neq in Hlk2 by exact Hneq.
+      destruct lr2 as [l2 r2].
+      destruct (Hwrite l2 r2 Hin2old) as [i2 [Hnur_lookup _]].
+      assert (Hr2 : r2 = r).
+      { rewrite Hnur_lookup in Hlk2. inversion Hlk2. reflexivity. }
+      subst r2.
+      assert (Hlt : i2 < j) by (eapply Hbound_prev; eauto).
+      rewrite Hnur_lookup in Hlk2. inversion Hlk2; subst i2.
+      lia.
+    + subst lr2. rewrite lookup_loc_extend_eq in Hlk2. inversion Hlk2; subst cl.
+      assert (Hneq : lr1 <> (l, r)).
+      { intro Heq. apply HfreshN. subst. exact Hin1old. }
+      rewrite lookup_loc_extend_neq in Hlk1 by exact Hneq.
+      destruct lr1 as [l1' r1'].
+      destruct (Hwrite l1' r1' Hin1old) as [i1 [Hnur_lookup _]].
+      assert (Hr1 : r1' = r).
+      { rewrite Hnur_lookup in Hlk1. inversion Hlk1. reflexivity. }
+      subst r1'.
+      assert (Hlt : i1 < j) by (eapply Hbound_prev; eauto).
+      rewrite Hnur_lookup in Hlk1. inversion Hlk1; subst i1.
+      lia.
+    + assert (Hneq1 : lr1 <> (l, r)).
+      { intro Heq. apply HfreshN. subst. exact Hin1old. }
+      assert (Hneq2 : lr2 <> (l, r)).
+      { intro Heq. apply HfreshN. subst. exact Hin2old. }
+      rewrite lookup_loc_extend_neq in Hlk1 by exact Hneq1.
+      rewrite lookup_loc_extend_neq in Hlk2 by exact Hneq2.
+      eapply Hinj; eauto.
+  - intros l0 r0 HinN.
+    destruct (in_extend_nursery_inv _ _ _ HinN) as [Heq | HinOld].
+    + inversion Heq; subst. exists l. apply in_extend_alloc_new.
+    + destruct (region_var_eq_dec r0 r) as [Heq | Hneq].
+      * subst. exists l. apply in_extend_alloc_new.
+      * destruct (Htracked l0 r0 HinOld) as [l_focus Hfocus].
+        exists l_focus. eapply in_extend_alloc_old; eauto.
+  - intros r0 l_focus i_focus l0 i0 Hfocus Hlkfocus HinN Hlk.
+    destruct (in_extend_nursery_inv _ _ _ HinN) as [HeqN | HinOld].
+    + inversion HeqN; subst.
+      simpl in Hfocus.
+      destruct Hfocus as [Heq | Hfocus_old].
+      * inversion Heq; subst.
+        rewrite lookup_loc_extend_eq in Hlkfocus.
+        rewrite lookup_loc_extend_eq in Hlk.
+        inversion Hlkfocus; inversion Hlk; subst.
+        left. split.
+        -- simpl. left. reflexivity.
+        -- lia.
+      * destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [_ Hneq].
+        contradiction.
+    + simpl in Hfocus.
+      destruct Hfocus as [Heq | Hfocus_old].
+      * inversion Heq; subst.
+        assert (Hneq_nur : (l0, r0) <> (l_focus, r0)).
+        { intro Heq_nur. apply HfreshN. inversion Heq_nur; subst. exact HinOld. }
+        rewrite lookup_loc_extend_eq in Hlkfocus.
+        rewrite lookup_loc_extend_neq in Hlk by exact Hneq_nur.
+        inversion Hlkfocus; subst i_focus.
+        assert (Hlt : i0 < j).
+        { eapply Hbound_prev; eauto. }
+        left. split.
+        -- simpl. left. reflexivity.
+        -- lia.
+      * destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [HfocusA Hneq].
+        assert (Hneq_focus : (l_focus, r0) <> (l, r)).
+        { intro Heq. inversion Heq; subst. contradiction. }
+        assert (Hneq_nur : (l0, r0) <> (l, r)).
+        { intro Heq. inversion Heq; subst. contradiction. }
+        rewrite lookup_loc_extend_neq in Hlkfocus by exact Hneq_focus.
+        rewrite lookup_loc_extend_neq in Hlk by exact Hneq_nur.
+        destruct (Hbound _ _ _ _ _ HfocusA Hlkfocus HinOld Hlk)
+          as [[HinFocus Hle] | [T [j0 [HSigma [Hew0 Hlt]]]]].
+        -- left. split.
+           ++ simpl. right. exact HinFocus.
+           ++ exact Hle.
+        -- right. exists T, j0. repeat split; assumption.
+Qed.
+
 Lemma has_type_sigma_c_monotone :
   (forall FDs DI G Sigma C A N A' N' e T,
       has_type FDs DI G Sigma C A N A' N' e T ->
@@ -3135,6 +3728,52 @@ Lemma pat_bindings_fresh_ctx_In_laddr :
 Proof.
   intros Sigma C A N binds lr Hfresh Hin.
   eapply Forall_forall; eauto.
+Qed.
+
+Lemma runtime_nursery_wf_case :
+  forall DI Sigma C A N M S rc binds indices,
+    runtime_nursery_wf DI Sigma A N M S ->
+    pat_bindings_fresh_ctx Sigma C A N binds ->
+    runtime_nursery_wf DI Sigma A N (extend_loc_fields M rc binds indices) S.
+Proof.
+  intros DI Sigma C A N M S rc binds indices
+         [Hfun [Hinj [Htracked Hbound]]] Hfresh.
+  repeat split.
+  - exact Hfun.
+  - intros lr1 lr2 cl Hin1 Hin2 Hlk1 Hlk2.
+    assert (Hmiss1 : ~ In lr1 (pat_laddrs binds)).
+    { intro Hin.
+      pose proof (pat_bindings_fresh_ctx_In_laddr _ _ _ _ _ _ Hfresh Hin)
+        as [_ [_ [_ Hnin]]].
+      exact (Hnin Hin1).
+    }
+    assert (Hmiss2 : ~ In lr2 (pat_laddrs binds)).
+    { intro Hin.
+      pose proof (pat_bindings_fresh_ctx_In_laddr _ _ _ _ _ _ Hfresh Hin)
+        as [_ [_ [_ Hnin]]].
+      exact (Hnin Hin2).
+    }
+    rewrite lookup_loc_extend_fields_miss in Hlk1 by exact Hmiss1.
+    rewrite lookup_loc_extend_fields_miss in Hlk2 by exact Hmiss2.
+    eapply Hinj; eauto.
+  - exact Htracked.
+  - intros r l_focus i_focus l i Hfocus Hlkfocus HinN Hlk.
+    assert (Hmiss_focus : ~ In (l_focus, r) (pat_laddrs binds)).
+    { intro Hin.
+      pose proof (pat_bindings_fresh_ctx_In_laddr _ _ _ _ _ _ Hfresh Hin)
+        as [_ [_ [Halloc _]]].
+      apply Halloc.
+      eapply in_alloc_laddrs_of_entry. exact Hfocus.
+    }
+    assert (Hmiss_nur : ~ In (l, r) (pat_laddrs binds)).
+    { intro Hin.
+      pose proof (pat_bindings_fresh_ctx_In_laddr _ _ _ _ _ _ Hfresh Hin)
+        as [_ [_ [_ Hnin]]].
+      exact (Hnin HinN).
+    }
+    rewrite lookup_loc_extend_fields_miss in Hlkfocus by exact Hmiss_focus.
+    rewrite lookup_loc_extend_fields_miss in Hlk by exact Hmiss_nur.
+    eapply Hbound; eauto.
 Qed.
 
 Lemma nodup_pat_term_vars_head_miss :
@@ -4306,25 +4945,95 @@ Qed.
 (* separate fdecl_instantiation_ok principle used by preservation's   *)
 (* D_App case.  That obligation is now explicit, rather than encoded  *)
 (* inside the static function-definition rule.                        *)
+(*                                                                    *)
+(* The mechanization also still lacks single-step preservation        *)
+(* theorems for has_type_fresh and expr_wf.  Rather than leaving      *)
+(* type_safety admitted, we make those remaining proof obligations    *)
+(* explicit here.                                                     *)
 (* ================================================================= *)
+
+Definition fresh_subject_reduction_closed
+    (FDs : fun_env) (DI : datacon_info) : Prop :=
+  forall Sigma C A N Aout Nout Afresh Nfresh M S e T S' M' e'
+         Sigma' C' Ain' Nin',
+    Forall (fdecl_has_type FDs DI) FDs ->
+    Forall (fdecl_instantiation_ok FDs DI) FDs ->
+    has_type FDs DI nil Sigma C A N Aout Nout e T ->
+    has_type_fresh FDs DI nil Sigma C A N Afresh Nfresh e T ->
+    store_wf DI Sigma C A N M S ->
+    expr_wf M e ->
+    step FDs DI S M e S' M' e' ->
+    has_type FDs DI nil Sigma' C' Ain' Nin' Aout Nout e' T ->
+    store_wf DI Sigma' C' Ain' Nin' M' S' ->
+    exists Afresh' Nfresh',
+      has_type_fresh FDs DI nil Sigma' C' Ain' Nin' Afresh' Nfresh' e' T.
+
+Definition expr_wf_subject_reduction_closed
+    (FDs : fun_env) (DI : datacon_info) : Prop :=
+  forall Sigma C A N Aout Nout Afresh Nfresh M S e T S' M' e'
+         Sigma' C' Ain' Nin',
+    Forall (fdecl_has_type FDs DI) FDs ->
+    Forall (fdecl_instantiation_ok FDs DI) FDs ->
+    has_type FDs DI nil Sigma C A N Aout Nout e T ->
+    has_type_fresh FDs DI nil Sigma C A N Afresh Nfresh e T ->
+    store_wf DI Sigma C A N M S ->
+    expr_wf M e ->
+    step FDs DI S M e S' M' e' ->
+    has_type FDs DI nil Sigma' C' Ain' Nin' Aout Nout e' T ->
+    store_wf DI Sigma' C' Ain' Nin' M' S' ->
+    expr_wf M' e'.
+
+Definition closed_subject_reduction_meta
+    (FDs : fun_env) (DI : datacon_info) : Prop :=
+  forall Sigma C A N Aout Nout Afresh Nfresh M S e T S' M' e',
+    Forall (fdecl_has_type FDs DI) FDs ->
+    Forall (fdecl_instantiation_ok FDs DI) FDs ->
+    has_type FDs DI nil Sigma C A N Aout Nout e T ->
+    has_type_fresh FDs DI nil Sigma C A N Afresh Nfresh e T ->
+    store_wf DI Sigma C A N M S ->
+    nursery_locmap_injective N M ->
+    expr_wf M e ->
+    step FDs DI S M e S' M' e' ->
+    exists Sigma' C' Ain' Nin' Afresh' Nfresh',
+      has_type FDs DI nil Sigma' C' Ain' Nin' Aout Nout e' T
+      /\ has_type_fresh FDs DI nil Sigma' C' Ain' Nin' Afresh' Nfresh' e' T
+      /\ store_wf DI Sigma' C' Ain' Nin' M' S'
+      /\ nursery_locmap_injective Nin' M'
+      /\ expr_wf M' e'.
 
 Theorem type_safety :
   forall FDs DI Sigma C A N A' N' Afresh Nfresh M S e T Sn Mn en,
     Forall (fdecl_has_type FDs DI) FDs ->
     Forall (fdecl_instantiation_ok FDs DI) FDs ->
+    closed_subject_reduction_meta FDs DI ->
     has_type FDs DI nil Sigma C A N A' N' e T ->
     has_type_fresh FDs DI nil Sigma C A N Afresh Nfresh e T ->
     store_wf DI Sigma C A N M S ->
+    nursery_locmap_injective N M ->
     di_functional DI ->
     expr_wf M e ->
     multi_step FDs DI S M e Sn Mn en ->
     (exists v0, en = e_val v0)
     \/ (exists S' M' e', step FDs DI Sn Mn en S' M' e').
 Proof.
-  (* By induction on multi_step:
-     - MS_refl: apply progress.
-     - MS_step: apply preservation to get new typing + store_wf,
-                then apply IH. *)
-Admitted.
+  intros FDs DI Sigma C A N A' N' Afresh Nfresh M S e T Sn Mn en
+         Hfds Hinsts Hsr Hty Hfresh Hwf Hninj Hdi Hewf Hmulti.
+  remember S as S0 eqn:HS0.
+  remember M as M0 eqn:HM0.
+  remember e as e0 eqn:He0.
+  revert Sigma C A N A' N' Afresh Nfresh M S e T
+         Hty Hfresh Hwf Hninj Hewf HS0 HM0 He0.
+  induction Hmulti;
+    intros Sigma C A N A' N' Afresh Nfresh Mcur Scur ecur T
+           Hty Hfresh Hwf Hninj Hewf HS0 HM0 He0;
+    subst.
+  - eapply progress; eauto.
+  - destruct (Hsr
+                Sigma C A N A' N' Afresh Nfresh Mcur Scur ecur T S' M' e'
+                Hfds Hinsts Hty Hfresh Hwf Hninj Hewf H)
+      as [Sigma1 [C1 [A1 [N1 [Afresh1 [Nfresh1 Hsr1]]]]]].
+    destruct Hsr1 as [Hty1 [Hfresh1 [Hwf1 [Hninj1 Hewf1]]]].
+    eapply IHHmulti; eauto.
+Qed.
 
 End LoCalSafety.
