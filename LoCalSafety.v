@@ -1534,17 +1534,21 @@ Lemma pat_has_type_fresh_tc_irrel :
   forall FDs DI tc_s G Sigma C A N A' N' T p,
     pat_has_type_fresh FDs DI tc_s G Sigma C A N A' N' T p ->
     forall tc_s',
-      pat_has_type_fresh FDs DI tc_s' G Sigma C A N A' N' T p
-with pats_have_type_fresh_tc_irrel :
+      pat_has_type_fresh FDs DI tc_s' G Sigma C A N A' N' T p.
+Proof.
+  intros FDs DI tc_s G Sigma C A N A' N' T p Hfresh tc_s'.
+  inversion Hfresh; subst.
+  econstructor; eauto.
+Qed.
+
+Lemma pats_have_type_fresh_tc_irrel :
   forall FDs DI tc_s G Sigma C A N A' N' T ps,
     pats_have_type_fresh FDs DI tc_s G Sigma C A N A' N' T ps ->
     forall tc_s',
       pats_have_type_fresh FDs DI tc_s' G Sigma C A N A' N' T ps.
 Proof.
-  - intros FDs DI tc_s G Sigma C A N A' N' T p Hfresh.
-    induction Hfresh; intros tc_s'; econstructor; eauto.
-  - intros FDs DI tc_s G Sigma C A N A' N' T ps Hfresh.
-    induction Hfresh; intros tc_s'; constructor; eauto using pat_has_type_fresh_tc_irrel.
+  intros FDs DI tc_s G Sigma C A N A' N' T ps Hfresh.
+  induction Hfresh; intros tc_s'; constructor; eauto using pat_has_type_fresh_tc_irrel.
 Qed.
 
 Lemma has_type_fresh_let_inv :
@@ -3965,6 +3969,23 @@ Proof.
       constructor; assumption.
 Qed.
 
+Lemma pats_case_fresh_ctx_subst_pats_val :
+  forall Sigma C A N ps z s,
+    pats_case_fresh_ctx Sigma C A N ps ->
+    pats_case_fresh_ctx Sigma C A N (subst_pats_val z s ps).
+Proof.
+  intros Sigma C A N ps z s Hfresh.
+  induction Hfresh as [| p ps Hp Hps IH]; simpl.
+  - constructor.
+  - destruct p as [dc binds body]. simpl.
+    destruct
+      (existsb
+         (fun b : term_var * ty =>
+            if term_var_eq_dec z (fst b) then true else false)
+         binds);
+      constructor; assumption.
+Qed.
+
 Lemma pats_case_wf_In :
   forall r_s ps dc binds body,
     pats_case_wf r_s ps ->
@@ -4540,6 +4561,387 @@ Proof.
   pose proof (typed_nil_value_has_type_fresh FDs DI Sigma C A N vl T Hty) as HF.
   exact (expr_has_type_fresh_tenv_irrelevant
            FDs DI nil Sigma C A N A N (e_val vl) T HF G).
+Qed.
+
+Definition paired_subst_expr_fresh_case
+    FDs DI G Sigma C A N A' N' e T
+    (HF : has_type_fresh FDs DI G Sigma C A N A' N' e T) : Prop :=
+  forall (HT : has_type FDs DI G Sigma C A N A' N' e T)
+         prefix z uty Gamma s,
+    G = ((prefix ++ (z, uty) :: Gamma)%list) ->
+    lookup_tenv prefix z = None ->
+    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A N (e_val s) uty ->
+    (forall y, In y (val_term_vars s) -> ~ In y (expr_bound_term_vars e)) ->
+    has_type_fresh FDs DI (prefix ++ Gamma)%list Sigma C A N A' N' (subst_val z s e) T.
+
+Definition paired_subst_pat_fresh_case
+    FDs DI tc_s G Sigma C A N A' N' T p
+    (HF : pat_has_type_fresh FDs DI tc_s G Sigma C A N A' N' T p) : Prop :=
+  forall tc_s_ordinary
+         (HT : pat_has_type FDs DI tc_s_ordinary G Sigma C A N A' N' T p)
+         prefix z uty Gamma s,
+    G = ((prefix ++ (z, uty) :: Gamma)%list) ->
+    lookup_tenv prefix z = None ->
+    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A N (e_val s) uty ->
+    (forall y, In y (val_term_vars s) -> ~ In y (pat_bound_term_vars p)) ->
+    pat_has_type_fresh FDs DI tc_s (prefix ++ Gamma)%list Sigma C A N A' N' T
+                       (subst_pat_val z s p).
+
+Definition paired_subst_pats_fresh_case
+    FDs DI tc_s G Sigma C A N A' N' T ps
+    (HF : pats_have_type_fresh FDs DI tc_s G Sigma C A N A' N' T ps) : Prop :=
+  forall tc_s_ordinary
+         (HT : pats_have_type FDs DI tc_s_ordinary G Sigma C A N A' N' T ps)
+         prefix z uty Gamma s,
+    G = ((prefix ++ (z, uty) :: Gamma)%list) ->
+    lookup_tenv prefix z = None ->
+    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A N (e_val s) uty ->
+    (forall y, In y (val_term_vars s) -> ~ In y (pats_bound_term_vars ps)) ->
+    pats_have_type_fresh FDs DI tc_s (prefix ++ Gamma)%list Sigma C A N A' N' T
+                        (subst_pats_val z s ps).
+
+Theorem substitution_val_paired_fresh_mutual :
+  (forall FDs DI G Sigma C A N A' N' e T
+      (HF : has_type_fresh FDs DI G Sigma C A N A' N' e T),
+      paired_subst_expr_fresh_case FDs DI G Sigma C A N A' N' e T HF)
+  /\
+  (forall FDs DI tc_s G Sigma C A N A' N' T p
+      (HF : pat_has_type_fresh FDs DI tc_s G Sigma C A N A' N' T p),
+      paired_subst_pat_fresh_case FDs DI tc_s G Sigma C A N A' N' T p HF)
+  /\
+  (forall FDs DI tc_s G Sigma C A N A' N' T ps
+      (HF : pats_have_type_fresh FDs DI tc_s G Sigma C A N A' N' T ps),
+      paired_subst_pats_fresh_case FDs DI tc_s G Sigma C A N A' N' T ps HF).
+Proof.
+  eapply has_type_fresh_mutind.
+  - intros FDs DI G Sigma C A N x tc l r HT prefix z uty Gamma s HG Hnone Hs Hfresh.
+    unfold paired_subst_expr_fresh_case in *.
+    subst G. simpl in *.
+    inversion HT; subst; clear HT.
+    repeat rewrite lookup_tenv_app in *.
+    destruct (lookup_tenv prefix x) eqn:Hprefix.
+    + destruct (term_var_eq_dec z x) as [Heq | Hneq].
+      * subst x. rewrite Hnone in Hprefix. discriminate.
+      * apply TF_Var.
+    + simpl in *.
+      destruct (term_var_eq_dec x z) as [Heq | Hneq].
+      * subst x.
+        destruct (term_var_eq_dec z z); [| contradiction].
+        match goal with
+        | Hlookup : Some _ = Some _ |- _ =>
+            inversion Hlookup; subst
+        end.
+        exact (value_has_type_fresh _ _ _ _ _ _ _ _ _ Hs).
+      * simpl. destruct (term_var_eq_dec z x) as [Heqzx | Hneqzx].
+        { exfalso. apply Hneq. symmetry. exact Heqzx. }
+        apply TF_Var.
+  - intros FDs DI G Sigma C A N r0 i l r tc HT prefix z uty Gamma s HG Hnone Hs Hfresh.
+    unfold paired_subst_expr_fresh_case in *.
+    subst G. simpl. apply TF_ConcreteLoc.
+  - intros FDs DI G Sigma C A N A1 N1 A2 N2 x e1 e2 tc1 l1 r1 tc2 l2 r2
+      Hfresh1 IH1 Hfresh2 IH2 HT prefix z uty Gamma s HG Hnone Hs Hfresh.
+    unfold paired_subst_expr_fresh_case in *.
+    subst G. simpl.
+    eapply has_type_let_inv in HT as [A1t [N1t [Hty1 Hty2]]].
+    destruct has_type_fresh_outputs_mutual as [Hexfresh _].
+    destruct (Hexfresh _ _ _ _ _ _ _ _ _ _ _ Hty1 _ _ Hfresh1) as [HA1 HN1].
+    subst A1t N1t.
+    assert (Hfresh_e1 :
+      forall y, In y (val_term_vars s) -> ~ In y (expr_bound_term_vars e1)).
+    { intros y Hy Hin.
+      apply (Hfresh y Hy). simpl. apply in_or_app. left. exact Hin. }
+    eapply TF_Let.
+    + eapply IH1; eauto.
+    + destruct (term_var_eq_dec z x) as [Heq | Hneq].
+      * subst x. simpl.
+        eapply expr_has_type_fresh_tenv_irrelevant
+          with (G' := extend_tenv ((prefix ++ Gamma)%list) z (LocTy tc1 l1 r1)).
+        exact Hfresh2.
+      * simpl.
+        assert (Hs_mid :
+          has_type FDs DI (((x, LocTy tc1 l1 r1) :: prefix ++ Gamma)%list)
+                   Sigma C A N A N (e_val s) uty).
+        { change (((x, LocTy tc1 l1 r1) :: prefix ++ Gamma)%list)
+            with (extend_tenv ((prefix ++ Gamma)%list) x (LocTy tc1 l1 r1)).
+          eapply value_typing_extend_tenv_miss.
+          - exact Hs.
+          - intro Hinx.
+            apply (Hfresh x Hinx).
+            simpl. apply in_or_app. right. simpl. left. reflexivity.
+        }
+        assert (Hs_ext :
+          has_type FDs DI (((x, LocTy tc1 l1 r1) :: prefix ++ Gamma)%list)
+                   (extend_store Sigma (l1, r1) tc1) C A1 N1 A1 N1 (e_val s) uty).
+        { eapply value_typing_any_context.
+          - exact Hs_mid.
+          - intros y. reflexivity.
+          - intros lr tc' Hin. simpl. right. exact Hin.
+        }
+        assert (Hfresh_e2 :
+          forall y, In y (val_term_vars s) -> ~ In y (expr_bound_term_vars e2)).
+        { intros y Hy Hin.
+          apply (Hfresh y Hy).
+          apply in_or_app. right. simpl. right. exact Hin.
+        }
+        change
+          (has_type_fresh FDs DI
+             (((x, LocTy tc1 l1 r1) :: prefix ++ Gamma)%list)
+             (extend_store Sigma (l1, r1) tc1) C A1 N1 A2 N2
+             (subst_val z s e2) (LocTy tc2 l2 r2)).
+        specialize
+          (IH2 Hty2 ((x, LocTy tc1 l1 r1) :: prefix) z uty Gamma s
+             eq_refl).
+        simpl in IH2.
+        assert (Hnone' :
+          (if term_var_eq_dec z x
+           then Some (LocTy tc1 l1 r1)
+           else lookup_tenv prefix z) = None).
+        { destruct (term_var_eq_dec z x); [contradiction | exact Hnone]. }
+        specialize (IH2 Hnone' Hs_ext).
+        specialize (IH2 Hfresh_e2).
+        exact IH2.
+  - intros FDs DI G Sigma C A N A' N' r e t Hreg Hfresh_body IH HT prefix z uty Gamma s HG Hnone Hs Hfresh_s.
+    unfold paired_subst_expr_fresh_case in *.
+    subst G. simpl.
+    inversion HT; subst; clear HT.
+    eapply TF_LRegion.
+    + exact Hreg.
+    + eapply IH.
+      * exact H12.
+      * reflexivity.
+      * exact Hnone.
+      * eapply value_typing_any_context.
+        -- exact Hs.
+        -- intros y. reflexivity.
+        -- intros lr tc' Hin. exact Hin.
+      * exact Hfresh_s.
+  - intros FDs DI G Sigma C A N A'' N'' l r e tc' l' r'
+      Hctx Hfresh_body IH HT prefix z uty Gamma s HG Hnone Hs Hfresh_s.
+    unfold paired_subst_expr_fresh_case in *.
+    subst G. simpl.
+    inversion HT; subst; clear HT.
+    assert (Hs_body :
+      has_type FDs DI (prefix ++ Gamma)%list Sigma
+        (extend_conloc C (l, r) (LE_Start r))
+        (extend_alloc A r (AP_Loc (l, r)))
+        (extend_nursery N (l, r))
+        (extend_alloc A r (AP_Loc (l, r)))
+        (extend_nursery N (l, r))
+        (e_val s) uty).
+    { eapply value_typing_any_context.
+      - exact Hs.
+      - intros y. reflexivity.
+      - intros lr tc0 Hin. exact Hin.
+    }
+    match goal with
+    | Hbody : has_type FDs DI (prefix ++ (z, uty) :: Gamma)%list Sigma
+                 (extend_conloc C (l, r) (LE_Start r))
+                 (extend_alloc A r (AP_Loc (l, r)))
+                 (extend_nursery N (l, r))
+                 A'' N'' e (LocTy tc' l' r') |- _ =>
+        exact (TF_LLStart FDs DI (prefix ++ Gamma)%list Sigma C A N A'' N''
+                 l r (subst_val z s e) tc' l' r' Hctx
+                 (IH Hbody prefix z uty Gamma s eq_refl Hnone Hs_body Hfresh_s))
+    end.
+  - intros FDs DI G Sigma C A N A'' N'' l lprev r e tc'' l'' r''
+      Hctx Hfresh_body IH HT prefix z uty Gamma s HG Hnone Hs Hfresh_s.
+    unfold paired_subst_expr_fresh_case in *.
+    subst G. simpl.
+    inversion HT; subst; clear HT.
+    assert (Hs_body :
+      has_type FDs DI (prefix ++ Gamma)%list Sigma
+        (extend_conloc C (l, r) (LE_Next lprev r))
+        (extend_alloc A r (AP_Loc (l, r)))
+        (extend_nursery N (l, r))
+        (extend_alloc A r (AP_Loc (l, r)))
+        (extend_nursery N (l, r))
+        (e_val s) uty).
+    { eapply value_typing_any_context.
+      - exact Hs.
+      - intros y. reflexivity.
+      - intros lr tc0 Hin. exact Hin.
+    }
+    match goal with
+    | Hbody : has_type FDs DI (prefix ++ (z, uty) :: Gamma)%list Sigma
+                 (extend_conloc C (l, r) (LE_Next lprev r))
+                 (extend_alloc A r (AP_Loc (l, r)))
+                 (extend_nursery N (l, r))
+                 A'' N'' e (LocTy tc'' l'' r'') |- _ =>
+        exact (TF_LLTag FDs DI (prefix ++ Gamma)%list Sigma C A N A'' N''
+                 l lprev r (subst_val z s e) tc'' l'' r'' Hctx
+                 (IH Hbody prefix z uty Gamma s eq_refl Hnone Hs_body Hfresh_s))
+    end.
+  - intros FDs DI G Sigma C A N A'' N'' l l1 r tc_prev e tc' l' r'
+      Hctx Hfresh_body IH HT prefix z uty Gamma s HG Hnone Hs Hfresh_s.
+    unfold paired_subst_expr_fresh_case in *.
+    subst G. simpl.
+    inversion HT; subst; clear HT.
+    assert (Hs_body :
+      has_type FDs DI (prefix ++ Gamma)%list Sigma
+        (extend_conloc C (l, r) (LE_After tc_prev l1 r))
+        (extend_alloc A r (AP_Loc (l, r)))
+        (extend_nursery N (l, r))
+        (extend_alloc A r (AP_Loc (l, r)))
+        (extend_nursery N (l, r))
+        (e_val s) uty).
+    { eapply value_typing_any_context.
+      - exact Hs.
+      - intros y. reflexivity.
+      - intros lr tc0 Hin. exact Hin.
+    }
+    match goal with
+    | Hbody : has_type FDs DI (prefix ++ (z, uty) :: Gamma)%list Sigma
+                 (extend_conloc C (l, r) (LE_After tc_prev l1 r))
+                 (extend_alloc A r (AP_Loc (l, r)))
+                 (extend_nursery N (l, r))
+                 A'' N'' e (LocTy tc' l' r') |- _ =>
+        exact (TF_LLAfter FDs DI (prefix ++ Gamma)%list Sigma C A N A'' N''
+                 l l1 r tc_prev (subst_val z s e) tc' l' r' Hctx
+                 (IH Hbody prefix z uty Gamma s eq_refl Hnone Hs_body Hfresh_s))
+    end.
+  - intros FDs DI G Sigma C A N dc l r vs tc fieldtcs fields HT prefix z uty Gamma s HG Hnone Hs Hfresh.
+    unfold paired_subst_expr_fresh_case in *.
+    subst G. simpl.
+    exact (TF_DataCon FDs DI (prefix ++ Gamma)%list Sigma C A N
+             dc l r (List.map (subst_in_val z s) vs) tc fieldtcs fields).
+  - intros FDs DI G Sigma C A N f lrs vs tc l r f_locs f_params f_retty f_regions f_body
+      HT prefix z uty Gamma s HG Hnone Hs Hfresh.
+    unfold paired_subst_expr_fresh_case in *.
+    subst G. simpl.
+    exact (TF_App FDs DI (prefix ++ Gamma)%list Sigma C A N
+             f lrs (List.map (subst_in_val z s) vs) tc l r
+             f_locs f_params f_retty f_regions f_body).
+  - intros FDs DI G Sigma C A N A' N' scrut ps tc_s l_s r_s t
+      Hcasefresh Hpsfresh IHps HT prefix z uty Gamma s HG Hnone Hs Hfresh.
+    unfold paired_subst_expr_fresh_case in *.
+    subst G. rewrite subst_val_case.
+    inversion HT; subst; clear HT.
+    assert (Hfresh_ps :
+      forall y, In y (val_term_vars s) -> ~ In y (pats_bound_term_vars ps)).
+    { intros y Hy Hin. apply (Hfresh y Hy). simpl. exact Hin. }
+    refine
+      (TF_Case FDs DI (prefix ++ Gamma)%list Sigma C A N A' N'
+         (subst_in_val z s scrut) (subst_pats_val z s ps) tc_s l_s r_s t _ _).
+    + eapply pats_case_fresh_ctx_subst_pats_val.
+      exact Hcasefresh.
+    + eapply IHps.
+      * exact H14.
+      * reflexivity.
+      * exact Hnone.
+      * exact Hs.
+      * exact Hfresh_ps.
+  - intros FDs DI tc_s G Sigma C A N A' N' dc binds body tc fieldtcs tc_res l r
+      Hfresh_body IH tc_s_ordinary HT prefix z uty Gamma s HG Hnone Hs Hfresh.
+    unfold paired_subst_pat_fresh_case in *.
+    subst G. simpl.
+    inversion HT; subst; clear HT.
+    destruct
+      (existsb
+         (fun b : term_var * ty =>
+            if term_var_eq_dec z (fst b) then true else false)
+         binds) eqn:Hbinds; simpl.
+    + replace
+        (existsb
+           (fun b : term_var * located_type =>
+              if term_var_eq_dec z (fst b) then true else false)
+           binds)
+        with true by (symmetry; exact Hbinds).
+      refine
+        (TF_Pat FDs DI tc_s (prefix ++ Gamma)%list Sigma C A N A' N'
+           dc binds body tc fieldtcs tc_res l r _).
+      eapply expr_has_type_fresh_tenv_irrelevant
+        with (G' := extend_tenv_list (prefix ++ Gamma)%list binds).
+      exact Hfresh_body.
+    + replace
+        (existsb
+           (fun b : term_var * located_type =>
+              if term_var_eq_dec z (fst b) then true else false)
+           binds)
+        with false by (symmetry; exact Hbinds).
+      refine
+        (TF_Pat FDs DI tc_s (prefix ++ Gamma)%list Sigma C A N A' N'
+           dc binds (subst_val z s body) tc fieldtcs tc_res l r _).
+      replace (extend_tenv_list ((prefix ++ Gamma)%list) binds)
+        with ((extend_tenv_list prefix binds ++ Gamma)%list).
+      * eapply IH.
+        -- exact H19.
+        -- repeat rewrite extend_tenv_list_rev.
+           rewrite <- app_assoc. reflexivity.
+        -- apply lookup_tenv_extend_tenv_list_miss; assumption.
+        -- eapply value_typing_any_context.
+           ++ eapply value_typing_extend_tenv_list_disjoint.
+              ** exact Hs.
+              ** intros x t HinBind Hinx.
+                 apply (Hfresh x Hinx). simpl. apply in_or_app. left.
+                 change (In x (pat_term_vars binds)).
+                 eapply in_map with (f := fst) in HinBind.
+                 exact HinBind.
+           ++ intros y.
+              repeat rewrite extend_tenv_list_rev.
+              rewrite <- app_assoc.
+              reflexivity.
+           ++ intros ent tc' Hin. apply in_extend_store_list. exact Hin.
+        -- intros y Hy HinBody.
+           apply (Hfresh y Hy). simpl. apply in_or_app. right. exact HinBody.
+      * repeat rewrite extend_tenv_list_rev.
+        rewrite <- app_assoc. reflexivity.
+  - intros FDs DI tc_s G Sigma C A N t tc_s_ordinary HT prefix z uty Gamma s HG Hnone Hs Hfresh.
+    unfold paired_subst_pats_fresh_case in *.
+    subst G. simpl. constructor.
+  - intros FDs DI tc_s G Sigma C A N A' N' t p ps
+      Hfresh_pat IHpat Hfresh_ps IHps tc_s_ordinary HT prefix z uty Gamma s HG Hnone Hs Hfresh.
+    unfold paired_subst_pats_fresh_case in *.
+    subst G. simpl.
+    inversion HT; subst; clear HT.
+    eapply TF_PatsCons.
+    + match goal with
+      | Hpat : pat_has_type FDs DI tc_s_ordinary
+                 (prefix ++ (z, uty) :: Gamma)%list Sigma C A N A' N' t p |- _ =>
+          eapply IHpat;
+            [ exact Hpat
+            | reflexivity
+            | exact Hnone
+            | exact Hs
+            | intros y Hy HinPat;
+              apply (Hfresh y Hy); simpl; apply in_or_app; left; exact HinPat ]
+      end.
+    + match goal with
+      | Hps0 : pats_have_type FDs DI tc_s_ordinary
+                  (prefix ++ (z, uty) :: Gamma)%list Sigma C A N A' N' t ps |- _ =>
+          eapply IHps;
+            [ exact Hps0
+            | reflexivity
+            | exact Hnone
+            | exact Hs
+            | intros y Hy HinPs;
+              apply (Hfresh y Hy); simpl; apply in_or_app; right; exact HinPs ]
+      end.
+Qed.
+
+Lemma substitution_val_fresh_paired_prefix :
+  forall FDs DI prefix Gamma x vty Sigma C A N A' N' e T v0,
+    has_type FDs DI ((prefix ++ (x, vty) :: Gamma)%list) Sigma C A N A' N' e T ->
+    has_type_fresh FDs DI ((prefix ++ (x, vty) :: Gamma)%list) Sigma C A N A' N' e T ->
+    lookup_tenv prefix x = None ->
+    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A N (e_val v0) vty ->
+    (forall y, In y (val_term_vars v0) -> ~ In y (expr_bound_term_vars e)) ->
+    has_type_fresh FDs DI (prefix ++ Gamma)%list Sigma C A N A' N' (subst_val x v0 e) T.
+Proof.
+  intros FDs DI prefix Gamma x vty Sigma C A N A' N' e T v0 HT HF Hnone Hs Hfresh.
+  destruct substitution_val_paired_fresh_mutual as [Hex _].
+  eapply Hex with (prefix := prefix) (z := x) (uty := vty) (Gamma := Gamma) (s := v0); eauto.
+Qed.
+
+Lemma substitution_val_fresh_paired :
+  forall FDs DI Gamma x vty Sigma C A N A' N' e T v0,
+    has_type FDs DI (cons (x, vty) Gamma) Sigma C A N A' N' e T ->
+    has_type_fresh FDs DI (cons (x, vty) Gamma) Sigma C A N A' N' e T ->
+    has_type FDs DI Gamma Sigma C A N A N (e_val v0) vty ->
+    (forall y, In y (val_term_vars v0) -> ~ In y (expr_bound_term_vars e)) ->
+    has_type_fresh FDs DI Gamma Sigma C A N A' N' (subst_val x v0 e) T.
+Proof.
+  intros FDs DI Gamma x vty Sigma C A N A' N' e T v0 HT HF Hs Hfresh.
+  eapply substitution_val_fresh_paired_prefix with (prefix := nil); eauto.
 Qed.
 
 Lemma subst_case_bindings :
