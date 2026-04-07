@@ -330,6 +330,41 @@ Proof.
   repeat split; eauto.
 Qed.
 
+(* ================================================================= *)
+(* Additional invariants needed for progress                          *)
+(* ================================================================= *)
+
+(* Each constructor maps to unique info in DI. *)
+Definition di_functional (DI : datacon_info) : Prop :=
+  forall K info1 info2,
+    In (K, info1) DI -> In (K, info2) DI -> info1 = info2.
+
+(* Concrete location values are consistent with the location map. *)
+Definition val_wf (M : loc_map) (vl : val) : Prop :=
+  match vl with
+  | v_var _ => True
+  | v_cloc r0 i l r => lookup_loc M (l, r) = Some (r0, i)
+  end.
+
+(* All concrete location values in an expression are consistent. *)
+Fixpoint expr_wf (M : loc_map) (e : expr) {struct e} : Prop :=
+  match e with
+  | e_val vl => val_wf M vl
+  | e_app _ _ vs => Forall (val_wf M) vs
+  | e_datacon _ _ _ vs => Forall (val_wf M) vs
+  | e_let _ _ e1 e2 => expr_wf M e1 /\ expr_wf M e2
+  | e_letloc _ _ _ body => expr_wf M body
+  | e_letregion _ body => expr_wf M body
+  | e_case vl pats =>
+      val_wf M vl /\
+      (let fix pats_wf (ps : list pat) : Prop :=
+        match ps with
+        | nil => True
+        | pat_clause _ _ body :: ps' => expr_wf M body /\ pats_wf ps'
+        end
+      in pats_wf pats)
+  end.
+
 Definition tenv_equiv (G1 G2 : type_env) : Prop :=
   forall x, lookup_tenv G1 x = lookup_tenv G2 x.
 
