@@ -166,22 +166,6 @@ Fixpoint subst_vals (xs : list term_var) (vs : list val) (e : expr) : expr :=
   | _, _ => e
   end.
 
-Definition subst_val_fresh (x : term_var) (s : val) (e : expr) : expr :=
-  subst_val x s
-    (freshen_expr_with
-       (val_term_vars s)
-       (val_symbolic_laddrs s)
-       (val_region_vars s)
-       e).
-
-Definition subst_vals_fresh (xs : list term_var) (vs : list val) (e : expr) : expr :=
-  subst_vals xs vs
-    (freshen_expr_with
-       (vals_term_vars vs)
-       (vals_symbolic_laddrs vs)
-       (vals_region_vars vs)
-       e).
-
 (* ================================================================= *)
 (* Location/region substitution  (e[l_new^r_new / l_old^r_old])      *)
 (*   Needed for D-App (location parameter instantiation).            *)
@@ -294,17 +278,6 @@ Fixpoint subst_locs
   | _, _ => e
   end.
 
-Definition subst_locs_fresh
-    (formals actuals : list (loc_var * region_var))
-    (val_args : list val)
-    (e : expr) : expr :=
-  subst_locs formals actuals
-    (freshen_expr_with
-       (vals_term_vars val_args)
-       (actuals ++ vals_symbolic_laddrs val_args)
-       (loc_arg_regions actuals ++ vals_region_vars val_args)
-       e).
-
 Definition subst_app_fresh_with_support
     (avoid_l : list laddr)
     (avoid_r : list region_var)
@@ -320,13 +293,6 @@ Definition subst_app_fresh_with_support
       e in
   subst_locs formals actuals
     (subst_vals (List.map fst params) val_args e').
-
-Definition subst_app_fresh
-    (formals actuals : list (loc_var * region_var))
-    (params : list (term_var * ty))
-    (val_args : list val)
-    (e : expr) : expr :=
-  subst_app_fresh_with_support nil nil formals actuals params val_args e.
 
 Definition subst_app_runtime_fresh
     (M : loc_map)

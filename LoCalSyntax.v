@@ -68,9 +68,6 @@ Record program : Type := Program
 (* Decidable equality for all identifier types                        *)
 (* ================================================================= *)
 
-Lemma tycon_eq_dec : forall (a b : tycon), {a = b} + {a <> b}.
-Proof. decide equality; apply string_dec. Defined.
-
 Lemma datacon_eq_dec : forall (a b : datacon), {a = b} + {a <> b}.
 Proof. decide equality; apply string_dec. Defined.
 
@@ -279,21 +276,6 @@ Definition bind_loc_var (b : term_var * ty) : loc_var :=
 Definition bind_region_var (b : term_var * ty) : region_var :=
   snd (bind_laddr b).
 
-Definition term_var_name (x : term_var) : string :=
-  match x with
-  | mk_term_var s => s
-  end.
-
-Definition loc_var_name (l : loc_var) : string :=
-  match l with
-  | mk_loc_var s => s
-  end.
-
-Definition region_var_name (r : region_var) : string :=
-  match r with
-  | mk_region_var s => s
-  end.
-
 Definition val_term_vars (v0 : val) : list term_var :=
   match v0 with
   | v_var x => [x]
@@ -312,12 +294,6 @@ Definition val_symbolic_laddrs (v0 : val) : list laddr :=
   | v_cloc _ _ l r => [(l, r)]
   end.
 
-Definition val_symbolic_regions (v0 : val) : list region_var :=
-  match v0 with
-  | v_var _ => nil
-  | v_cloc _ _ _ r => [r]
-  end.
-
 Definition val_region_vars (v0 : val) : list region_var :=
   match v0 with
   | v_var _ => nil
@@ -332,9 +308,6 @@ Definition vals_loc_vars (vs : list val) : list loc_var :=
 
 Definition vals_symbolic_laddrs (vs : list val) : list laddr :=
   flat_map val_symbolic_laddrs vs.
-
-Definition vals_symbolic_regions (vs : list val) : list region_var :=
-  flat_map val_symbolic_regions vs.
 
 Definition vals_region_vars (vs : list val) : list region_var :=
   flat_map val_region_vars vs.
@@ -423,12 +396,6 @@ with expr_bound_regions (e : expr) : list region_var :=
         end
       in go pats
   end.
-
-Definition pat_bound_loc_vars (p : pat) : list loc_var :=
-  List.map fst (pat_bound_laddrs p).
-
-Definition expr_bound_loc_vars (e : expr) : list loc_var :=
-  List.map fst (expr_bound_laddrs e).
 
 Definition ty_loc_vars (t : ty) : list loc_var :=
   match t with
@@ -571,45 +538,6 @@ with expr_occurs_region_vars (e : expr) : list region_var :=
       in val_region_vars v0 ++ go pats
   end.
 
-(* Named-mechanization strengthening:
-   the thesis relies on an implicit Barendregt-style convention that
-   bound names are chosen apart.  In this development we make that
-   discipline explicit so later meta-theory can state exactly which
-   freshness/alpha-regularity assumptions are being used. *)
-Definition expr_binders_unique (e : expr) : Prop :=
-  NoDup (expr_bound_term_vars e)
-  /\ NoDup (expr_bound_laddrs e)
-  /\ NoDup (expr_bound_regions e).
-
-Definition fdecl_bound_term_vars (fd : fdecl) : list term_var :=
-  match fd with
-  | FunDecl _ _ named_args _ _ body =>
-      List.map fst named_args ++ expr_bound_term_vars body
-  end.
-
-Definition fdecl_bound_laddrs (fd : fdecl) : list laddr :=
-  match fd with
-  | FunDecl _ locs _ _ _ body =>
-      locs ++ expr_bound_laddrs body
-  end.
-
-Definition fdecl_bound_regions (fd : fdecl) : list region_var :=
-  match fd with
-  | FunDecl _ _ _ _ regions body =>
-      regions ++ expr_bound_regions body
-  end.
-
-Definition fdecl_binders_unique (fd : fdecl) : Prop :=
-  NoDup (fdecl_bound_term_vars fd)
-  /\ NoDup (fdecl_bound_laddrs fd)
-  /\ NoDup (fdecl_bound_regions fd).
-
-(* Readable aliases used by the safety development when stating the
-   explicit alpha-regularity assumptions needed by the named proof. *)
-Definition expr_alpha_regular : expr -> Prop := expr_binders_unique.
-
-Definition fdecl_alpha_regular : fdecl -> Prop := fdecl_binders_unique.
-
 (* Source/runtime split, made explicit for the named mechanization:
    the thesis source language contains only symbolic locations.  Concrete
    locations <r,i>^(l^r) are runtime values produced by evaluation,
@@ -638,15 +566,6 @@ Fixpoint expr_symbolic_only (e : expr) : Prop :=
         end
       in pats_ok pats
   end.
-
-Definition fdecl_symbolic_only (fd : fdecl) : Prop :=
-  match fd with
-  | FunDecl _ _ _ _ _ body => expr_symbolic_only body
-  end.
-
-Definition program_symbolic_only (p : program) : Prop :=
-  Forall fdecl_symbolic_only (prog_fdecls p)
-  /\ expr_symbolic_only (prog_main p).
 
 Fixpoint tick_marks (n : nat) : string :=
   match n with
@@ -1047,29 +966,5 @@ Fixpoint freshen_expr_with
         end in
       e_case v0 (go_pats pats)
   end.
-
-(* Freshen(FD) in the thesis discharges exactly this no-capture
-   condition before function-body substitution.  We expose the
-   side condition at the shared syntax layer so both the static and
-   dynamic developments can state it explicitly. *)
-Definition app_subst_fresh
-    (body : expr) (loc_args : list laddr) (val_args : list val) : Prop :=
-  (forall x,
-      In x (vals_term_vars val_args) ->
-      ~ In x (expr_bound_term_vars body))
-  /\
-  (forall lr,
-      In lr (loc_args ++ vals_symbolic_laddrs val_args) ->
-      ~ In lr (expr_bound_laddrs body))
-  /\
-  (forall r,
-      In r (loc_arg_regions loc_args ++ vals_symbolic_regions val_args) ->
-      ~ In r (expr_bound_regions body)).
-
-Definition program_binders_unique (p : program) : Prop :=
-  Forall fdecl_binders_unique (prog_fdecls p)
-  /\ expr_binders_unique (prog_main p).
-
-Definition program_alpha_regular : program -> Prop := program_binders_unique.
 
 End LoCalSyntax.

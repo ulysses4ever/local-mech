@@ -86,10 +86,6 @@ Fixpoint extend_store_list (S0 : store_type) (entries : list (laddr * tycon))
   | cons ent rest => extend_store_list (cons ent S0) rest
   end.
 
-(* Construct initial Γ and Σ from a parameter list (for T-FunctionDef). *)
-Definition params_to_tenv (params : list (term_var * located_type))
-  : type_env := params.
-
 Definition params_to_store (params : list (term_var * located_type))
   : store_type := map bind_store_entry params.
 
@@ -116,11 +112,6 @@ Fixpoint constructor_focus_loc
   match fields with
   | nil => root_l
   | (lf, _) :: fields' => constructor_focus_loc lf fields'
-  end.
-
-Definition type_mentions_loc (lr : laddr) (t : located_type) : Prop :=
-  match t with
-  | LocTy _ l r => In (l, r) [lr]
   end.
 
 Definition type_uses_formal_locs (locs : list laddr) (t : located_type) : Prop :=
@@ -162,12 +153,6 @@ Definition instantiated_fun_body
 
 Definition fresh_region (A : alloc_env) (r : region_var) : Prop :=
   forall ap, ~ In (r, ap) A.
-
-Definition fresh_laddr_store (S0 : store_type) (lr : laddr) : Prop :=
-  forall tc, ~ In (lr, tc) S0.
-
-Definition fresh_laddr_conloc (C : conloc_env) (lr : laddr) : Prop :=
-  forall le, ~ In (lr, le) C.
 
 Definition store_laddrs (S0 : store_type) : list laddr :=
   List.map fst S0.

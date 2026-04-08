@@ -200,148 +200,6 @@ Definition nursery_locmap_injective
     lookup_loc M lr2 = Some cl ->
     lr1 = lr2.
 
-Definition nursery_regions_tracked
-    (A : alloc_env)
-    (N : nursery) : Prop :=
-  (* Strengthening beyond the thesis text:
-     every live nursery location belongs to a region whose current
-     allocation focus is tracked in A.  This is the runtime-side fact
-     needed to argue that introducing a fresh region or advancing a
-     region focus cannot silently alias an older live nursery cell. *)
-  forall l r,
-    In (l, r) N ->
-    exists l_focus, In (r, AP_Loc (l_focus, r)) A.
-
-Definition nursery_focus_bounded
-    (DI : datacon_info)
-    (Sigma : store_type)
-    (A : alloc_env)
-    (N : nursery)
-    (M : loc_map)
-    (S : store) : Prop :=
-  (* Companion strengthening:
-     every current allocation focus bounds the live nursery cells in
-     its region, either directly when the focus itself is still live in
-     N, or via its end witness when the focus has already been
-     materialized in Sigma.  This matches how LoCal uses A:
-     after D_DataCon the focus intentionally moves back to the
-     constructor root, while future allocation resumes at its end.
-
-     Meta-theory note:
-     the earlier index-only formulation was too strong for D_DataCon,
-     because the focus may point at a materialized root whose end is
-     strictly beyond its starting address. *)
-  forall r l_focus i_focus l i,
-    In (r, AP_Loc (l_focus, r)) A ->
-    lookup_loc M (l_focus, r) = Some (r, i_focus) ->
-    In (l, r) N ->
-    lookup_loc M (l, r) = Some (r, i) ->
-    (In (l_focus, r) N /\ i <= i_focus)
-    \/
-    (exists T j,
-        In ((l_focus, r), T) Sigma /\
-        end_witness DI S (r, i_focus) T (r, j) /\
-        i < j).
-
-Definition alloc_env_functional
-    (A : alloc_env) : Prop :=
-  (* Proof-side refinement:
-     the implementation updates A with extend_alloc, so semantically A
-     is used as a finite map from regions to their current allocation
-     focus.  Making that extensionality explicit avoids reasoning as if
-     both AP_None and AP_Loc could coexist for the same region. *)
-  forall r ap1 ap2,
-    In (r, ap1) A ->
-    In (r, ap2) A ->
-    ap1 = ap2.
-
-Definition runtime_nursery_wf
-    (DI : datacon_info)
-    (Sigma : store_type)
-    (A : alloc_env)
-    (N : nursery)
-    (M : loc_map)
-    (S : store) : Prop :=
-  alloc_env_functional A
-  /\ nursery_locmap_injective N M
-  /\ nursery_regions_tracked A N
-  /\ nursery_focus_bounded DI Sigma A N M S.
-
-(* ================================================================= *)
-(* In_lookup_fdecl: membership in the function list implies lookup    *)
-(* succeeds (needed to bridge typing's In-premise with step's        *)
-(* lookup_fdecl call).                                                *)
-(* ================================================================= *)
-
-Lemma In_lookup_fdecl :
-  forall FDs f locs params retty regions body,
-    In (FunDecl f locs params retty regions body) FDs ->
-    exists l' p' t' rg' b',
-      lookup_fdecl FDs f = Some (FunDecl f l' p' t' rg' b').
-Proof.
-  induction FDs as [| [f0 l0 p0 t0 rg0 b0] FDs' IH];
-    intros f locs params retty regions body Hin.
-  - inversion Hin.
-  - simpl. destruct (fun_var_eq_dec f f0).
-    + subst. do 5 eexists. reflexivity.
-    + destruct Hin as [Heq | Hin].
-      * inversion Heq; subst. congruence.
-      * eapply IH. exact Hin.
-Qed.
-
-Lemma lookup_fdecl_In :
-  forall FDs f fd,
-    lookup_fdecl FDs f = Some fd ->
-    In fd FDs.
-Proof.
-  induction FDs as [| fd0 FDs' IH]; intros f fd Hlk; simpl in Hlk.
-  - discriminate.
-  - destruct fd0 as [f0 l0 p0 t0 rg0 b0].
-    destruct (fun_var_eq_dec f f0).
-    + inversion Hlk; subst. left. reflexivity.
-    + right. eapply IH. exact Hlk.
-Qed.
-
-
-(* ================================================================= *)
-(* Additional invariants needed for progress                          *)
-(* ================================================================= *)
-
-(* Each constructor maps to unique info in DI. *)
-Definition di_functional (DI : datacon_info) : Prop :=
-  forall K info1 info2,
-    In (K, info1) DI -> In (K, info2) DI -> info1 = info2.
-
-(* Concrete location values are consistent with the location map. *)
-Definition val_wf (M : loc_map) (vl : val) : Prop :=
-  match vl with
-  | v_var _ => True
-  | v_cloc r0 i l r => lookup_loc M (l, r) = Some (r0, i)
-  end.
-
-(* All concrete location values in an expression are consistent. *)
-Fixpoint expr_wf (M : loc_map) (e : expr) {struct e} : Prop :=
-  match e with
-  | e_val vl => val_wf M vl
-  | e_app _ _ vs => Forall (val_wf M) vs
-  | e_datacon _ _ _ vs => Forall (val_wf M) vs
-  | e_let _ _ e1 e2 => expr_wf M e1 /\ expr_wf M e2
-  | e_letloc _ _ _ body => expr_wf M body
-  | e_letregion _ body => expr_wf M body
-  | e_case vl pats =>
-      val_wf M vl /\
-      (let fix pats_wf (ps : list pat) : Prop :=
-        match ps with
-        | nil => True
-        | pat_clause _ _ body :: ps' => expr_wf M body /\ pats_wf ps'
-        end
-      in pats_wf pats)
-  end.
-
-(* ================================================================= *)
-(* Helper lemmas for progress                                         *)
-(* ================================================================= *)
-
 Lemma lookup_datacon_In : forall DI K info,
   lookup_datacon DI K = Some info -> In (K, info) DI.
 Proof.
@@ -483,6 +341,41 @@ Proof.
   repeat split; eauto.
 Qed.
 
+(* ================================================================= *)
+(* Additional invariants needed for progress                          *)
+(* ================================================================= *)
+
+(* Each constructor maps to unique info in DI. *)
+Definition di_functional (DI : datacon_info) : Prop :=
+  forall K info1 info2,
+    In (K, info1) DI -> In (K, info2) DI -> info1 = info2.
+
+(* Concrete location values are consistent with the location map. *)
+Definition val_wf (M : loc_map) (vl : val) : Prop :=
+  match vl with
+  | v_var _ => True
+  | v_cloc r0 i l r => lookup_loc M (l, r) = Some (r0, i)
+  end.
+
+(* All concrete location values in an expression are consistent. *)
+Fixpoint expr_wf (M : loc_map) (e : expr) {struct e} : Prop :=
+  match e with
+  | e_val vl => val_wf M vl
+  | e_app _ _ vs => Forall (val_wf M) vs
+  | e_datacon _ _ _ vs => Forall (val_wf M) vs
+  | e_let _ _ e1 e2 => expr_wf M e1 /\ expr_wf M e2
+  | e_letloc _ _ _ body => expr_wf M body
+  | e_letregion _ body => expr_wf M body
+  | e_case vl pats =>
+      val_wf M vl /\
+      (let fix pats_wf (ps : list pat) : Prop :=
+        match ps with
+        | nil => True
+        | pat_clause _ _ body :: ps' => expr_wf M body /\ pats_wf ps'
+        end
+      in pats_wf pats)
+  end.
+
 Definition tenv_equiv (G1 G2 : type_env) : Prop :=
   forall x, lookup_tenv G1 x = lookup_tenv G2 x.
 
@@ -491,9 +384,6 @@ Definition store_extends (Sigma Sigma' : store_type) : Prop :=
 
 Definition conloc_extends (C C' : conloc_env) : Prop :=
   forall lr le, In (lr, le) C -> In (lr, le) C'.
-
-Definition alloc_extends (A A' : alloc_env) : Prop :=
-  forall r ap, In (r, ap) A -> exists ap', In (r, ap') A'.
 
 Lemma store_extends_refl :
   forall Sigma,
@@ -508,54 +398,6 @@ Lemma conloc_extends_refl :
 Proof.
   unfold conloc_extends. auto.
 Qed.
-
-Lemma alloc_extends_refl :
-  forall A,
-    alloc_extends A A.
-Proof.
-  unfold alloc_extends. eauto.
-Qed.
-
-Lemma alloc_extends_trans :
-  forall A A' A'',
-    alloc_extends A A' ->
-    alloc_extends A' A'' ->
-    alloc_extends A A''.
-Proof.
-  intros A A' A'' H12 H23 r ap Hin.
-  destruct (H12 r ap Hin) as [ap' Hin'].
-  eauto.
-Qed.
-
-Lemma in_remove_alloc_region_preserve :
-  forall A r0 r ap,
-    r <> r0 ->
-    In (r, ap) A ->
-    In (r, ap) (remove_alloc_region A r0).
-Proof.
-  intros A r0 r ap Hneq Hin.
-  induction A as [| [r1 ap1] A IH]; simpl in *.
-  - contradiction.
-  - destruct (region_var_eq_dec r1 r0).
-    + subst r1. destruct Hin as [Heq | Hin].
-      * inversion Heq; subst. contradiction.
-      * exact (IH Hin).
-    + destruct Hin as [Heq | Hin].
-      * left. exact Heq.
-      * right. exact (IH Hin).
-Qed.
-
-Lemma alloc_extends_extend_alloc :
-  forall A r ap,
-    alloc_extends A (extend_alloc A r ap).
-Proof.
-  intros A r ap r0 ap0 Hin.
-  destruct (region_var_eq_dec r0 r) as [Heq | Hneq].
-  - subst. exists ap. simpl. left. reflexivity.
-  - exists ap0. simpl. right.
-    eapply in_remove_alloc_region_preserve; eauto.
-Qed.
-
 Lemma in_remove_alloc_region_preserved :
   forall A r r' ap',
     In (r', ap') A ->
@@ -616,51 +458,6 @@ Proof.
   unfold extend_alloc. simpl. right.
   apply in_remove_alloc_region_preserved; assumption.
 Qed.
-
-Lemma alloc_env_functional_remove_alloc_region :
-  forall A r,
-    alloc_env_functional A ->
-    alloc_env_functional (remove_alloc_region A r).
-Proof.
-  intros A r Hfun r' ap1 ap2 Hin1 Hin2.
-  destruct (in_remove_alloc_region_inv _ _ _ _ Hin1) as [Hin1A _].
-  destruct (in_remove_alloc_region_inv _ _ _ _ Hin2) as [Hin2A _].
-  eapply Hfun; eauto.
-Qed.
-
-Lemma alloc_env_functional_extend_alloc :
-  forall A r ap,
-    alloc_env_functional A ->
-    alloc_env_functional (extend_alloc A r ap).
-Proof.
-  intros A r ap Hfun r' ap1 ap2 Hin1 Hin2.
-  simpl in Hin1, Hin2.
-  destruct Hin1 as [Heq1 | Hin1].
-  - inversion Heq1; subst r' ap1.
-    destruct Hin2 as [Heq2 | Hin2].
-    + inversion Heq2. reflexivity.
-    + exfalso.
-      destruct (in_remove_alloc_region_inv _ _ _ _ Hin2) as [_ Hneq].
-      contradiction.
-  - destruct Hin2 as [Heq2 | Hin2].
-    + inversion Heq2; subst r' ap2.
-      exfalso.
-      destruct (in_remove_alloc_region_inv _ _ _ _ Hin1) as [_ Hneq].
-      contradiction.
-    + eapply alloc_env_functional_remove_alloc_region; eauto.
-Qed.
-
-Lemma alloc_env_functional_singleton :
-  forall r ap,
-    alloc_env_functional [(r, ap)].
-Proof.
-  intros r ap r' ap1 ap2 Hin1 Hin2.
-  simpl in Hin1, Hin2.
-  destruct Hin1 as [Heq1 | []].
-  destruct Hin2 as [Heq2 | []].
-  inversion Heq1; inversion Heq2; subst; reflexivity.
-Qed.
-
 Lemma in_extend_nursery_inv :
   forall N lr lr',
     In lr' (extend_nursery N lr) ->
@@ -742,128 +539,6 @@ Proof.
   destruct (in_remove_nursery_inv _ _ _ Hin) as [_ Hneq].
   contradiction.
 Qed.
-
-Lemma nursery_locmap_injective_remove_nursery :
-  forall N M lr,
-    nursery_locmap_injective N M ->
-    nursery_locmap_injective (remove_nursery N lr) M.
-Proof.
-  intros N M lr Hinj lr1 lr2 cl Hin1 Hin2 Hlk1 Hlk2.
-  eapply Hinj; eauto.
-  - eapply in_remove_nursery_inv in Hin1. exact (proj1 Hin1).
-  - eapply in_remove_nursery_inv in Hin2. exact (proj1 Hin2).
-Qed.
-
-Lemma nursery_regions_tracked_remove_nursery :
-  forall A N lr,
-    nursery_regions_tracked A N ->
-    nursery_regions_tracked A (remove_nursery N lr).
-Proof.
-  intros A N lr Htracked l r Hin.
-  eapply Htracked.
-  eapply in_remove_nursery_inv in Hin.
-  exact (proj1 Hin).
-Qed.
-
-Lemma nursery_focus_bounded_remove_nursery :
-  forall DI Sigma A N M S l r,
-    nursery_focus_bounded DI Sigma A N M S ->
-    ~ In (r, AP_Loc (l, r)) A ->
-    nursery_focus_bounded DI Sigma A (remove_nursery N (l, r)) M S.
-Proof.
-  intros DI Sigma A N M S l r Hbound Hnotfocus
-         r0 l_focus i_focus l0 i0 Hfocus Hlkfocus Hin Hlk.
-  destruct (in_remove_nursery_inv _ _ _ Hin) as [HinN Hneq_nur].
-  destruct (Hbound _ _ _ _ _ Hfocus Hlkfocus HinN Hlk)
-    as [[HinFocus Hle] | [T [j [HSigma [Hew Hlt]]]]].
-  - left. split.
-    + eapply in_remove_nursery_preserved; eauto.
-      intro Heq.
-      inversion Heq; subst.
-      apply Hnotfocus. exact Hfocus.
-    + exact Hle.
-  - right. exists T, j. repeat split; assumption.
-Qed.
-
-Lemma fresh_region_no_nursery_region :
-  forall A N r,
-    fresh_region A r ->
-    nursery_regions_tracked A N ->
-    forall l, ~ In (l, r) N.
-Proof.
-  intros A N r Hfresh Htracked l HinN.
-  destruct (Htracked l r HinN) as [l_focus HinA].
-  eapply Hfresh.
-  exact HinA.
-Qed.
-
-Lemma ap_none_no_nursery_region :
-  forall A N r,
-    alloc_env_functional A ->
-    nursery_regions_tracked A N ->
-    In (r, AP_None) A ->
-    forall l, ~ In (l, r) N.
-Proof.
-  intros A N r Hfun Htracked Hnone l HinN.
-  destruct (Htracked l r HinN) as [l_focus Hfocus].
-  specialize (Hfun r AP_None (AP_Loc (l_focus, r)) Hnone Hfocus).
-  discriminate.
-Qed.
-
-Lemma runtime_nursery_wf_remove_nursery :
-  forall DI Sigma A N M S l r,
-    runtime_nursery_wf DI Sigma A N M S ->
-    ~ In (r, AP_Loc (l, r)) A ->
-    runtime_nursery_wf DI Sigma A (remove_nursery N (l, r)) M S.
-Proof.
-  intros DI Sigma A N M S l r [Hfun [Hinj [Htracked Hbound]]] Hnotfocus.
-  repeat split; eauto.
-  - eapply nursery_locmap_injective_remove_nursery; eauto.
-  - eapply nursery_regions_tracked_remove_nursery; eauto.
-  - eapply nursery_focus_bounded_remove_nursery; eauto.
-Qed.
-
-Lemma store_wf_remove_nursery :
-  forall DI Sigma C A N M S lr,
-    store_wf DI Sigma C A N M S ->
-    store_wf DI Sigma C A (remove_nursery N lr) M S.
-Proof.
-  intros DI Sigma C A N M S lr Hwf.
-  destruct Hwf as [Hmap [Hcfc [Halloc [Hdisj1 Hdisj2]]]].
-  destruct Hcfc as [Hstart [Hnext Hafter]].
-  destruct Halloc as [Hlin1 [Hlin2 [Hwrite [Hempty Htracked]]]].
-  repeat split.
-  * exact Hmap.
-  * exact Hstart.
-  * exact Hnext.
-  * exact Hafter.
-  * intros r l HinA HinN.
-      destruct (in_remove_nursery_inv _ _ _ HinN) as [HinN_old _].
-      eapply Hlin1; eauto.
-  * intros r l i T j HinA Hlk Hnin Hew.
-    destruct (in_dec laddr_eq_dec (l, r) N) as [HinN_old | Hnin_old].
-    + destruct (Hwrite l r HinN_old) as [i0 [Hlk0 Hnone]].
-      rewrite Hlk in Hlk0. inversion Hlk0; subst i0.
-      exfalso.
-      inversion Hew; subst.
-      match goal with
-      | Hheap : heap_lookup S r i = Some _ |- _ =>
-          rewrite Hheap in Hnone; discriminate
-      end.
-    + eapply Hlin2; eauto.
-  * intros l r HinN.
-      destruct (in_remove_nursery_inv _ _ _ HinN) as [HinN_old _].
-      eapply Hwrite; eauto.
-  * exact Hempty.
-  * exact Htracked.
-  * intros l r T HinSigma HinN.
-      destruct (in_remove_nursery_inv _ _ _ HinN) as [HinN_old _].
-      eapply Hdisj1; eauto.
-  * intros l r HinN Hex.
-      destruct (in_remove_nursery_inv _ _ _ HinN) as [HinN_old _].
-      eapply Hdisj2; eauto.
-Qed.
-
 Lemma fresh_region_store_absent :
   forall DI A N M S r,
     alloc_wf DI A N M S ->
@@ -977,17 +652,6 @@ Proof.
   - exact Heq.
   - destruct b as [x t]. apply IH. apply tenv_equiv_extend. exact Heq.
 Qed.
-
-Lemma tenv_equiv_extend_shadow :
-  forall G x t1 t2,
-    tenv_equiv (extend_tenv (extend_tenv G x t2) x t1)
-               (extend_tenv G x t1).
-Proof.
-  unfold tenv_equiv, extend_tenv.
-  intros G x t1 t2 y. simpl.
-  destruct (term_var_eq_dec y x); auto.
-Qed.
-
 Lemma tenv_equiv_shadow_under_prefix :
   forall prefix G x t,
     lookup_tenv prefix x <> None ->
@@ -1002,22 +666,6 @@ Proof.
   - subst. exfalso. apply Hprefix. exact Hlookup.
   - destruct (term_var_eq_dec y x); [contradiction | reflexivity].
 Qed.
-
-Lemma closed_value_typing_any_context :
-  forall FDs DI Sigma C A N vl T,
-    has_type FDs DI nil Sigma C A N A N (e_val vl) T ->
-    forall G Sigma' C' A' N',
-      (forall lr tc, In (lr, tc) Sigma -> In (lr, tc) Sigma') ->
-      has_type FDs DI G Sigma' C' A' N' A' N' (e_val vl) T.
-Proof.
-  intros FDs DI Sigma C A N vl T Hv.
-  inversion Hv; subst; intros G Sigma' C' A' N' Hsigma.
-  - match goal with [ Hlookup : lookup_tenv nil _ = Some _ |- _ ] =>
-      simpl in Hlookup; discriminate
-    end.
-  - econstructor. eauto.
-Qed.
-
 Lemma value_typing_any_context :
   forall FDs DI G Sigma C A N vl T,
     has_type FDs DI G Sigma C A N A N (e_val vl) T ->
@@ -1059,19 +707,6 @@ Proof.
   intros FDs DI G Sigma C A N A' N' vl tc l r Hty.
   inversion Hty; subst; assumption.
 Qed.
-
-Lemma typed_value_nil_no_term_vars :
-  forall FDs DI Sigma C A N A' N' vl T y,
-    has_type FDs DI nil Sigma C A N A' N' (e_val vl) T ->
-    In y (val_term_vars vl) ->
-    False.
-Proof.
-  intros FDs DI Sigma C A N A' N' vl T y Hty Hin.
-  inversion Hty; subst; simpl in *.
-  - discriminate.
-  - exact Hin.
-Qed.
-
 Scheme has_type_ind' := Induction for has_type Sort Prop
 with field_vals_have_type_ind' := Induction for field_vals_have_type Sort Prop
 with app_vals_have_type_ind' := Induction for app_vals_have_type Sort Prop
@@ -1117,183 +752,6 @@ Fixpoint pats_term_capture_safe (ps : list pat) : Prop :=
 
 Definition gamma_binders_disjoint (G : type_env) (e : expr) : Prop :=
   forall x t, In (x, t) G -> ~ In x (expr_bound_term_vars e).
-
-Lemma gamma_binders_disjoint_nil :
-  forall e,
-    gamma_binders_disjoint nil e.
-Proof.
-  intros e x t Hin.
-  inversion Hin.
-Qed.
-
-(* The thesis source language is symbolic-only.  Once we make that
-   source/runtime split explicit, source expressions are automatically
-   expr_wf under any loc-map because they contain no raw concrete
-   locations. *)
-Lemma val_symbolic_only_val_wf_any :
-  forall M v0,
-    val_symbolic_only v0 ->
-    val_wf M v0.
-Proof.
-  intros M v0 Hsym.
-  destruct v0; simpl in *; try contradiction; trivial.
-Qed.
-
-Lemma expr_symbolic_only_expr_wf_any :
-  forall M e,
-    expr_symbolic_only e ->
-    expr_wf M e.
-Proof.
-  intros M e.
-  revert e.
-  fix IH 1.
-  intros [v0 | f locs vs | dc l r vs | x T e1 e2 | l r le body
-        | r body | scrut pats]; simpl; intro Hsym.
-  - eapply val_symbolic_only_val_wf_any. exact Hsym.
-  - induction Hsym.
-    + constructor.
-    + constructor.
-      * eapply val_symbolic_only_val_wf_any. exact H.
-      * exact IHHsym.
-  - induction Hsym.
-    + constructor.
-    + constructor.
-      * eapply val_symbolic_only_val_wf_any. exact H.
-      * exact IHHsym.
-  - destruct Hsym as [H1 H2]. split.
-    + eapply IH. exact H1.
-    + eapply IH. exact H2.
-  - eapply IH. exact Hsym.
-  - eapply IH. exact Hsym.
-  - destruct Hsym as [Hscrut Hpats]. split.
-    + eapply val_symbolic_only_val_wf_any. exact Hscrut.
-    + revert Hpats.
-      induction pats as [| [K binds body] ps IHps]; simpl; intro Hps.
-      * exact I.
-      * destruct Hps as [Hbody Hps']. split.
-        -- eapply IH. exact Hbody.
-        -- eapply IHps. exact Hps'.
-Qed.
-
-Lemma NoDup_app_cross :
-  forall (A : Type) (xs ys : list A) (x : A),
-    NoDup (xs ++ ys) ->
-    In x xs ->
-    ~ In x ys.
-Proof.
-  intros A xs.
-  induction xs as [| a xs IH]; intros ys x Hnd Hin; simpl in *.
-  - contradiction.
-  - inversion Hnd; subst.
-    rename H1 into Hnotin_tail.
-    destruct Hin as [Heq | Hin].
-    + subst a. intro HinY.
-      apply Hnotin_tail. apply in_or_app. right. exact HinY.
-    + eapply IH; eauto.
-Qed.
-
-Lemma NoDup_app_left :
-  forall (A : Type) (xs ys : list A),
-    NoDup (xs ++ ys) ->
-    NoDup xs.
-Proof.
-  intros A xs.
-  induction xs as [| a xs IH]; intros ys Hnd; simpl in *.
-  - constructor.
-  - inversion Hnd; subst.
-    constructor.
-    + intro Hin.
-      apply H1. apply in_or_app. left. exact Hin.
-    + eapply IH. exact H2.
-Qed.
-
-Lemma NoDup_app_right :
-  forall (A : Type) (xs ys : list A),
-    NoDup (xs ++ ys) ->
-    NoDup ys.
-Proof.
-  intros A xs.
-  induction xs as [| a xs IH]; intros ys Hnd; simpl in *.
-  - exact Hnd.
-  - inversion Hnd; subst.
-    eapply IH. exact H2.
-Qed.
-
-Lemma expr_alpha_regular_let_inv :
-  forall x T e1 e2,
-    expr_alpha_regular (e_let x T e1 e2) ->
-    expr_alpha_regular e1
-    /\ expr_alpha_regular e2
-    /\ (forall y,
-          In y (expr_bound_term_vars e1) ->
-          ~ In y (expr_bound_term_vars e2))
-    /\ (forall lr,
-          In lr (expr_bound_laddrs e1) ->
-          ~ In lr (expr_bound_laddrs e2))
-    /\ (forall r,
-          In r (expr_bound_regions e1) ->
-          ~ In r (expr_bound_regions e2)).
-Proof.
-  intros x T e1 e2 [Hterms [Hladdrs Hregions]].
-  simpl in Hterms, Hladdrs, Hregions.
-  assert (Hterms_tail :
-    NoDup (expr_bound_term_vars e2)).
-  { assert (Hx_tail : NoDup (x :: expr_bound_term_vars e2)).
-    { eapply NoDup_app_right. exact Hterms. }
-    inversion Hx_tail; subst. exact H2. }
-  split.
-  - split.
-    + eapply NoDup_app_left. exact Hterms.
-    + split.
-      * eapply NoDup_app_left. exact Hladdrs.
-      * eapply NoDup_app_left. exact Hregions.
-  - split.
-    + split.
-      * exact Hterms_tail.
-      * split.
-        -- eapply NoDup_app_right. exact Hladdrs.
-        -- eapply NoDup_app_right. exact Hregions.
-	    + split.
-	      * intros y Hin1 Hin2.
-	        eapply (NoDup_app_cross _ (expr_bound_term_vars e1)
-	                  (x :: expr_bound_term_vars e2) y Hterms Hin1).
-	        simpl. right. exact Hin2.
-	      * split.
-	        -- intros lr Hin1 Hin2.
-	           eapply (NoDup_app_cross laddr
-	                     (expr_bound_laddrs e1)
-	                     (expr_bound_laddrs e2)
-	                     lr Hladdrs Hin1 Hin2).
-	        -- intros r Hin1 Hin2.
-	           eapply (NoDup_app_cross region_var
-	                     (expr_bound_regions e1)
-	                     (expr_bound_regions e2)
-	                     r Hregions Hin1 Hin2).
-Qed.
-
-Lemma fdecl_alpha_regular_inv :
-  forall f locs named_args out regions body,
-    fdecl_alpha_regular (FunDecl f locs named_args out regions body) ->
-    NoDup (List.map fst named_args ++ expr_bound_term_vars body)
-    /\ NoDup (locs ++ expr_bound_laddrs body)
-    /\ NoDup (regions ++ expr_bound_regions body).
-Proof.
-  intros f locs named_args out regions body Halpha.
-  exact Halpha.
-Qed.
-
-Lemma expr_term_capture_safe_let_inv :
-  forall x T e1 e2,
-    expr_term_capture_safe (e_let x T e1 e2) ->
-    expr_term_capture_safe e1
-    /\ expr_term_capture_safe e2
-    /\ (forall y, In y (expr_occurs_term_vars e1) -> ~ In y (expr_bound_term_vars e2)).
-Proof.
-  intros x T e1 e2 Hsafe.
-  simpl in Hsafe.
-  exact Hsafe.
-Qed.
-
 (* The thesis treats fresh location/region binders as an implicit
    side-condition.  We keep the typing rules monotone, and instead
    expose the needed binder-freshness obligations as a separate
@@ -1412,124 +870,12 @@ with pats_have_type_fresh :
         pat_has_type_fresh FDs DI tc_s G Sigma C A N A' N' t p ->
         pats_have_type_fresh FDs DI tc_s G Sigma C A N A' N' t ps ->
         pats_have_type_fresh FDs DI tc_s G Sigma C A N A' N' t (cons p ps).
-
-(* Freshness-side companion to fdecl_instantiation_ok:
-   preservation itself only needs ordinary typing of the instantiated
-   function body, but iterating preservation in type_safety also needs
-   the proof-side binder-freshness judgment on the D_App reduct.  The
-   thesis uses Freshen(FD) informally at this point; the named
-   mechanization exposes the corresponding meta-level obligation
-   explicitly here instead of hiding it in the final theorem. *)
-Definition fdecl_instantiation_fresh_ok
-    (FDs : fun_env) (DI : datacon_info) (fd : fdecl) : Prop :=
-  match fd with
-  | FunDecl _ locs named_args out _ body =>
-      forall G Sigma C A N avoid_l avoid_r lrs vs tc l r,
-        In (l, r) N ->
-        In (r, AP_Loc (l, r)) A ->
-        List.length lrs = List.length locs ->
-        subst_locs_in_ty locs lrs out = LocTy tc l r ->
-        app_vals_have_type FDs DI G Sigma C A N locs lrs vs named_args ->
-        has_type_fresh FDs DI G Sigma C A N
-          A (remove_nursery N (l, r))
-          (instantiated_fun_body_with_support
-             avoid_l avoid_r locs lrs named_args vs body)
-          (LocTy tc l r)
-  end.
-
 Scheme has_type_fresh_ind' := Induction for has_type_fresh Sort Prop
 with pat_has_type_fresh_ind' := Induction for pat_has_type_fresh Sort Prop
 with pats_have_type_fresh_ind' := Induction for pats_have_type_fresh Sort Prop.
 
 Combined Scheme has_type_fresh_mutind
   from has_type_fresh_ind', pat_has_type_fresh_ind', pats_have_type_fresh_ind'.
-
-Theorem has_type_fresh_tenv_irrelevant_mutual :
-  (forall FDs DI G Sigma C A N A' N' e T
-      (HF : has_type_fresh FDs DI G Sigma C A N A' N' e T),
-      forall G',
-        has_type_fresh FDs DI G' Sigma C A N A' N' e T)
-  /\
-  (forall FDs DI tc_s G Sigma C A N A' N' T p
-      (HF : pat_has_type_fresh FDs DI tc_s G Sigma C A N A' N' T p),
-      forall G',
-        pat_has_type_fresh FDs DI tc_s G' Sigma C A N A' N' T p)
-  /\
-  (forall FDs DI tc_s G Sigma C A N A' N' T ps
-      (HF : pats_have_type_fresh FDs DI tc_s G Sigma C A N A' N' T ps),
-      forall G',
-        pats_have_type_fresh FDs DI tc_s G' Sigma C A N A' N' T ps).
-Proof.
-  eapply has_type_fresh_mutind.
-  - intros. constructor.
-  - intros. constructor.
-  - intros FDs DI G Sigma C A N A' N' A'' N'' x e1 e2 tc1 l1 r1 tc2 l2 r2
-      Hf1 IH1 Hf2 IH2 G'.
-    eapply TF_Let.
-    + eapply IH1.
-    + eapply IH2.
-  - intros FDs DI G Sigma C A N A' N' r e t Hfresh Hbody IH G'.
-    eapply TF_LRegion.
-    + exact Hfresh.
-    + eapply IH.
-  - intros FDs DI G Sigma C A N A'' N'' l r e tc' l' r' Hfreshctx Hbody IH G'.
-    eapply TF_LLStart.
-    + exact Hfreshctx.
-    + eapply IH.
-  - intros FDs DI G Sigma C A N A'' N'' l lprev r e tc'' l'' r'' Hfreshctx Hbody IH G'.
-    eapply TF_LLTag.
-    + exact Hfreshctx.
-    + eapply IH.
-  - intros FDs DI G Sigma C A N A'' N'' l l1 r tc_prev e tc' l' r' Hfreshctx Hbody IH G'.
-    eapply TF_LLAfter.
-    + exact Hfreshctx.
-    + eapply IH.
-  - intros FDs DI G Sigma C A N dc l r vs tc fieldtcs fields G'.
-    exact (TF_DataCon FDs DI G' Sigma C A N dc l r vs tc fieldtcs fields).
-  - intros FDs DI G Sigma C A N f lrs vs tc l r f_locs f_params f_retty f_regions f_body G'.
-    exact (TF_App FDs DI G' Sigma C A N f lrs vs tc l r
-            f_locs f_params f_retty f_regions f_body).
-  - intros FDs DI G Sigma C A N A' N' scrut ps tc_s l_s r_s t
-      Hcasefresh Hps IHps G'.
-    exact (TF_Case FDs DI G' Sigma C A N A' N' scrut ps tc_s l_s r_s t
-             Hcasefresh (IHps G')).
-  - intros FDs DI tc_s G Sigma C A N A' N' dc binds body tc fieldtcs tc_res l r
-      Hbody IHbody G'.
-    exact (TF_Pat FDs DI tc_s G' Sigma C A N A' N'
-             dc binds body tc fieldtcs tc_res l r
-             (IHbody (extend_tenv_list G' binds))).
-  - intros FDs DI tc_s G Sigma C A N t G'.
-    apply TF_PatsNil.
-  - intros FDs DI tc_s G Sigma C A N A' N' t p ps Hpat IHpat Hps IHps G'.
-    exact (TF_PatsCons FDs DI tc_s G' Sigma C A N A' N' t p ps
-             (IHpat G') (IHps G')).
-Qed.
-
-Corollary expr_has_type_fresh_tenv_irrelevant :
-  forall FDs DI G Sigma C A N A' N' e T,
-    has_type_fresh FDs DI G Sigma C A N A' N' e T ->
-    forall G',
-      has_type_fresh FDs DI G' Sigma C A N A' N' e T.
-Proof.
-  intros FDs DI G Sigma C A N A' N' e T HF G'.
-  destruct has_type_fresh_tenv_irrelevant_mutual as [Hex _].
-  eapply Hex; eauto.
-Qed.
-
-Lemma pats_have_type_fresh_In :
-  forall FDs DI tc_s G Sigma C A N A' N' T ps p,
-    pats_have_type_fresh FDs DI tc_s G Sigma C A N A' N' T ps ->
-    In p ps ->
-    pat_has_type_fresh FDs DI tc_s G Sigma C A N A' N' T p.
-Proof.
-  intros FDs DI tc_s G Sigma C A N A' N' T ps p Hfresh Hin.
-  induction Hfresh.
-  - contradiction.
-  - simpl in Hin. destruct Hin as [Heq | Hin].
-    + subst. exact H.
-    + eapply IHHfresh; exact Hin.
-Qed.
-
 Lemma pat_has_type_fresh_tc_irrel :
   forall FDs DI tc_s G Sigma C A N A' N' T p,
     pat_has_type_fresh FDs DI tc_s G Sigma C A N A' N' T p ->
@@ -1776,25 +1122,6 @@ Proof.
   unfold extend_loc. simpl.
   destruct (laddr_eq_dec lr1 lr2); congruence.
 Qed.
-
-Lemma lookup_loc_extend_fields_miss :
-  forall M rc binds indices lr,
-    ~ In lr (pat_laddrs binds) ->
-    lookup_loc (extend_loc_fields M rc binds indices) lr = lookup_loc M lr.
-Proof.
-  intros M rc binds. revert M rc.
-  induction binds as [| b binds IH]; intros M rc indices lr Hmiss; simpl in *.
-  - reflexivity.
-  - destruct indices as [| i indices].
-    + reflexivity.
-    + simpl in Hmiss.
-      assert (Hneq : lr <> bind_laddr b).
-      { intro Heq. apply Hmiss. subst. simpl. left. reflexivity. }
-      rewrite IH.
-      * apply lookup_loc_extend_neq. exact Hneq.
-      * intro Hin. apply Hmiss. simpl. right. exact Hin.
-Qed.
-
 Lemma heap_find_heap_write_eq :
   forall h i K,
     heap_find (heap_write h i K) i = Some K.
@@ -1971,18 +1298,6 @@ Proof.
   destruct end_witness_functional_mutual as [H _].
   eauto.
 Qed.
-
-Corollary end_witness_fields_functional :
-  forall DI S r i Ts j1 j2,
-    end_witness_fields DI S r i Ts j1 ->
-    end_witness_fields DI S r i Ts j2 ->
-    j1 = j2.
-Proof.
-  intros DI S r i Ts j1 j2 H1 H2.
-  destruct end_witness_functional_mutual as [_ H].
-  eauto.
-Qed.
-
 Lemma end_witness_store_write_fresh_mutual :
   (forall DI S cl tc cl',
       end_witness DI S cl tc cl' ->
@@ -2125,18 +1440,6 @@ Proof.
   destruct end_witness_store_write_other_region_mutual as [H _].
   eauto.
 Qed.
-
-Lemma end_witness_fields_store_write_other_region :
-  forall DI S r i K r0 j0 Ts j1,
-    r0 <> r ->
-    end_witness_fields DI (store_write S r i K) r0 j0 Ts j1 ->
-    end_witness_fields DI S r0 j0 Ts j1.
-Proof.
-  intros DI S r i K r0 j0 Ts j1 Hrneq Hfields.
-  destruct end_witness_store_write_other_region_mutual as [_ H].
-  eauto.
-Qed.
-
 Lemma nonempty_fields_end_gt_allocptr :
   forall FDs DI G Sigma C A N M S r lf tc vh vs fields start_i,
     store_wf DI Sigma C A N M S ->
@@ -2578,27 +1881,6 @@ Corollary expr_has_type_tenv_equiv :
 Proof.
   intros. destruct has_type_tenv_equiv as [Hexpr _]. eauto.
 Qed.
-
-Corollary pat_has_type_tenv_equiv :
-  forall FDs DI tc_s G Sigma C A N A' N' T p,
-    pat_has_type FDs DI tc_s G Sigma C A N A' N' T p ->
-    forall G', tenv_equiv G G' ->
-    pat_has_type FDs DI tc_s G' Sigma C A N A' N' T p.
-Proof.
-  intros. destruct has_type_tenv_equiv as [_ [Hpat _]].
-  eauto.
-Qed.
-
-Corollary pats_have_type_tenv_equiv :
-  forall FDs DI tc_s G Sigma C A N A' N' T ps,
-    pats_have_type FDs DI tc_s G Sigma C A N A' N' T ps ->
-    forall G', tenv_equiv G G' ->
-    pats_have_type FDs DI tc_s G' Sigma C A N A' N' T ps.
-Proof.
-  intros. destruct has_type_tenv_equiv as [_ [_ Hps]].
-  eauto.
-Qed.
-
 Lemma store_extends_extend_store :
   forall Sigma Sigma' lr tc,
     store_extends Sigma Sigma' ->
@@ -3305,370 +2587,6 @@ Proof.
       apply HfreshS. rewrite <- Heq. eapply in_store_laddrs_of_entry. exact HinSigma.
     + eapply Hdisj2; eauto.
 Qed.
-
-Lemma runtime_nursery_wf_letregion :
-  forall DI Sigma A N M S r,
-    runtime_nursery_wf DI Sigma A N M S ->
-    fresh_region A r ->
-    runtime_nursery_wf DI Sigma (extend_alloc A r AP_None) N M S.
-Proof.
-  intros DI Sigma A N M S r [Hfun [Hinj [Htracked Hbound]]] Hfresh.
-  repeat split.
-  - apply alloc_env_functional_extend_alloc. exact Hfun.
-  - exact Hinj.
-  - intros l r0 HinN.
-    destruct (region_var_eq_dec r0 r) as [Heq | Hneq].
-    + subst. exfalso.
-      eapply fresh_region_no_nursery_region; eauto.
-    + destruct (Htracked l r0 HinN) as [l_focus Hfocus].
-      exists l_focus. eapply in_extend_alloc_old; eauto.
-  - intros r0 l_focus i_focus l i Hfocus Hlkfocus HinN Hlk.
-    simpl in Hfocus.
-    destruct Hfocus as [Heq | Hfocus_old].
-    + inversion Heq.
-    + destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [HfocusA Hneq].
-      eapply Hbound; eauto.
-Qed.
-
-Lemma runtime_nursery_wf_letloc_start :
-  forall DI Sigma C A N M S l r,
-    runtime_nursery_wf DI Sigma A N M S ->
-    store_wf DI Sigma C A N M S ->
-    letloc_fresh_ctx Sigma C A N (l, r) ->
-    In (r, AP_None) A ->
-    runtime_nursery_wf DI Sigma
-                       (extend_alloc A r (AP_Loc (l, r)))
-                       (extend_nursery N (l, r))
-                       (extend_loc M (l, r) (r, 0))
-                       S.
-Proof.
-  intros DI Sigma C A N M S l r
-         [Hfun [Hinj [Htracked Hbound]]]
-         Hwf [_ [_ [_ HfreshN]]] Hnone.
-  destruct Hwf as [_ [_ [Halloc _]]].
-  destruct Halloc as [_ [_ [Hwrite _]]].
-  repeat split.
-  - apply alloc_env_functional_extend_alloc. exact Hfun.
-  - intros lr1 lr2 cl Hin1 Hin2 Hlk1 Hlk2.
-    destruct (in_extend_nursery_inv _ _ _ Hin1) as [Heq1 | Hin1old];
-    destruct (in_extend_nursery_inv _ _ _ Hin2) as [Heq2 | Hin2old].
-    + subst. reflexivity.
-    + subst lr1. rewrite lookup_loc_extend_eq in Hlk1. inversion Hlk1; subst cl.
-      assert (Hneq : lr2 <> (l, r)).
-      { intro Heq. apply HfreshN. subst. exact Hin2old. }
-      rewrite lookup_loc_extend_neq in Hlk2 by exact Hneq.
-      destruct lr2 as [l2 r2].
-      destruct (Hwrite l2 r2 Hin2old) as [i2 [Hnur_lookup _]].
-      rewrite Hnur_lookup in Hlk2. inversion Hlk2; subst r2 i2.
-      exfalso.
-      eapply (ap_none_no_nursery_region A N r Hfun Htracked Hnone l2 Hin2old).
-    + subst lr2. rewrite lookup_loc_extend_eq in Hlk2. inversion Hlk2; subst cl.
-      assert (Hneq : lr1 <> (l, r)).
-      { intro Heq. apply HfreshN. subst. exact Hin1old. }
-      rewrite lookup_loc_extend_neq in Hlk1 by exact Hneq.
-      destruct lr1 as [l1 r1].
-      destruct (Hwrite l1 r1 Hin1old) as [i1 [Hnur_lookup _]].
-      rewrite Hnur_lookup in Hlk1. inversion Hlk1; subst r1 i1.
-      exfalso.
-      eapply (ap_none_no_nursery_region A N r Hfun Htracked Hnone l1 Hin1old).
-    + assert (Hneq1 : lr1 <> (l, r)).
-      { intro Heq. apply HfreshN. subst. exact Hin1old. }
-      assert (Hneq2 : lr2 <> (l, r)).
-      { intro Heq. apply HfreshN. subst. exact Hin2old. }
-      rewrite lookup_loc_extend_neq in Hlk1 by exact Hneq1.
-      rewrite lookup_loc_extend_neq in Hlk2 by exact Hneq2.
-      eapply Hinj; eauto.
-  - intros l0 r0 HinN.
-    destruct (in_extend_nursery_inv _ _ _ HinN) as [Heq | HinOld].
-    + inversion Heq; subst. exists l. apply in_extend_alloc_new.
-    + destruct (region_var_eq_dec r0 r) as [Heq | Hneq].
-      * subst. exfalso.
-        eapply ap_none_no_nursery_region; eauto.
-      * destruct (Htracked l0 r0 HinOld) as [l_focus Hfocus].
-        exists l_focus. eapply in_extend_alloc_old; eauto.
-  - intros r0 l_focus i_focus l0 i0 Hfocus Hlkfocus HinN Hlk.
-    destruct (in_extend_nursery_inv _ _ _ HinN) as [HeqN | HinOld].
-    + inversion HeqN; subst.
-      simpl in Hfocus.
-      destruct Hfocus as [Heq | Hfocus_old].
-      * inversion Heq; subst.
-        rewrite lookup_loc_extend_eq in Hlkfocus.
-        inversion Hlkfocus; subst.
-        rewrite lookup_loc_extend_eq in Hlk.
-        inversion Hlk; subst.
-        left. split.
-        -- simpl. left. reflexivity.
-        -- lia.
-      * destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [_ Hneq].
-        contradiction.
-    + simpl in Hfocus.
-      destruct Hfocus as [Heq | Hfocus_old].
-      * inversion Heq; subst.
-        exfalso. eapply ap_none_no_nursery_region; eauto.
-      * destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [HfocusA Hneq].
-        assert (Hneq_focus : (l_focus, r0) <> (l, r)).
-        { intro Heq. inversion Heq; subst. contradiction. }
-        assert (Hneq_nur : (l0, r0) <> (l, r)).
-        { intro Heq_nur. inversion Heq_nur; subst. contradiction. }
-        rewrite lookup_loc_extend_neq in Hlkfocus by exact Hneq_focus.
-        rewrite lookup_loc_extend_neq in Hlk by exact Hneq_nur.
-        destruct (Hbound _ _ _ _ _ HfocusA Hlkfocus HinOld Hlk)
-          as [[HinFocus Hle] | [T [j [HSigma [Hew Hlt]]]]].
-        -- left. split.
-           ++ simpl. right. exact HinFocus.
-           ++ exact Hle.
-        -- right. exists T, j. repeat split; assumption.
-Qed.
-
-Lemma runtime_nursery_wf_letloc_tag :
-  forall DI Sigma C A N M S l lprev r i,
-    runtime_nursery_wf DI Sigma A N M S ->
-    store_wf DI Sigma C A N M S ->
-    letloc_fresh_ctx Sigma C A N (l, r) ->
-    In (r, AP_Loc (lprev, r)) A ->
-    In (lprev, r) N ->
-    lookup_loc M (lprev, r) = Some (r, i) ->
-    runtime_nursery_wf DI Sigma
-                       (extend_alloc A r (AP_Loc (l, r)))
-                       (extend_nursery N (l, r))
-                       (extend_loc M (l, r) (r, i + 1))
-                       S.
-Proof.
-  intros DI Sigma C A N M S l lprev r i
-         [Hfun [Hinj [Htracked Hbound]]]
-         Hwf [_ [_ [_ HfreshN]]] Hfocus_prev Hnur_prev Hlookup_prev.
-  destruct Hwf as [_ [_ [Halloc [Hdisj1 _]]]].
-  destruct Halloc as [_ [_ [Hwrite _]]].
-  assert (Hbound_prev :
-    forall l0 i0,
-      In (l0, r) N ->
-      lookup_loc M (l0, r) = Some (r, i0) ->
-      i0 <= i).
-  { intros l0 i0 HinN HlkN.
-    destruct (Hbound r lprev i l0 i0 Hfocus_prev Hlookup_prev HinN HlkN)
-      as [[HinFocus Hle] | [T [j [HSigma [Hew Hlt]]]]].
-    - exact Hle.
-    - exfalso. eapply (Hdisj1 lprev r T HSigma Hnur_prev).
-  }
-  repeat split.
-  - apply alloc_env_functional_extend_alloc. exact Hfun.
-  - intros lr1 lr2 cl Hin1 Hin2 Hlk1 Hlk2.
-    destruct (in_extend_nursery_inv _ _ _ Hin1) as [Heq1 | Hin1old];
-    destruct (in_extend_nursery_inv _ _ _ Hin2) as [Heq2 | Hin2old].
-    + subst. reflexivity.
-    + subst lr1. rewrite lookup_loc_extend_eq in Hlk1. inversion Hlk1; subst cl.
-      assert (Hneq : lr2 <> (l, r)).
-      { intro Heq. apply HfreshN. subst. exact Hin2old. }
-      rewrite lookup_loc_extend_neq in Hlk2 by exact Hneq.
-      destruct lr2 as [l2 r2].
-      destruct (Hwrite l2 r2 Hin2old) as [i2 [Hnur_lookup _]].
-      assert (Hr2 : r2 = r).
-      { rewrite Hnur_lookup in Hlk2. inversion Hlk2. reflexivity. }
-      subst r2.
-      assert (Hle : i2 <= i) by (eapply Hbound_prev; eauto).
-      rewrite Hnur_lookup in Hlk2. inversion Hlk2; subst i2.
-      lia.
-    + subst lr2. rewrite lookup_loc_extend_eq in Hlk2. inversion Hlk2; subst cl.
-      assert (Hneq : lr1 <> (l, r)).
-      { intro Heq. apply HfreshN. subst. exact Hin1old. }
-      rewrite lookup_loc_extend_neq in Hlk1 by exact Hneq.
-      destruct lr1 as [l1 r1].
-      destruct (Hwrite l1 r1 Hin1old) as [i1 [Hnur_lookup _]].
-      assert (Hr1 : r1 = r).
-      { rewrite Hnur_lookup in Hlk1. inversion Hlk1. reflexivity. }
-      subst r1.
-      assert (Hle : i1 <= i) by (eapply Hbound_prev; eauto).
-      rewrite Hnur_lookup in Hlk1. inversion Hlk1; subst i1.
-      lia.
-    + assert (Hneq1 : lr1 <> (l, r)).
-      { intro Heq. apply HfreshN. subst. exact Hin1old. }
-      assert (Hneq2 : lr2 <> (l, r)).
-      { intro Heq. apply HfreshN. subst. exact Hin2old. }
-      rewrite lookup_loc_extend_neq in Hlk1 by exact Hneq1.
-      rewrite lookup_loc_extend_neq in Hlk2 by exact Hneq2.
-      eapply Hinj; eauto.
-  - intros l0 r0 HinN.
-    destruct (in_extend_nursery_inv _ _ _ HinN) as [Heq | HinOld].
-    + inversion Heq; subst. exists l. apply in_extend_alloc_new.
-    + destruct (region_var_eq_dec r0 r) as [Heq | Hneq].
-      * subst. exists l. apply in_extend_alloc_new.
-      * destruct (Htracked l0 r0 HinOld) as [l_focus Hfocus].
-        exists l_focus. eapply in_extend_alloc_old; eauto.
-  - intros r0 l_focus i_focus l0 i0 Hfocus Hlkfocus HinN Hlk.
-    destruct (in_extend_nursery_inv _ _ _ HinN) as [HeqN | HinOld].
-    + inversion HeqN; subst.
-      simpl in Hfocus.
-      destruct Hfocus as [Heq | Hfocus_old].
-      * inversion Heq; subst.
-        rewrite lookup_loc_extend_eq in Hlkfocus.
-        rewrite lookup_loc_extend_eq in Hlk.
-        inversion Hlkfocus; inversion Hlk; subst.
-        left. split.
-        -- simpl. left. reflexivity.
-        -- lia.
-      * destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [_ Hneq].
-        contradiction.
-    + simpl in Hfocus.
-      destruct Hfocus as [Heq | Hfocus_old].
-      * inversion Heq; subst.
-        assert (Hneq_nur : (l0, r0) <> (l_focus, r0)).
-        { intro Heq_nur. apply HfreshN. inversion Heq_nur; subst. exact HinOld. }
-        rewrite lookup_loc_extend_eq in Hlkfocus.
-        rewrite lookup_loc_extend_neq in Hlk by exact Hneq_nur.
-        inversion Hlkfocus; subst i_focus.
-        assert (Hle : i0 <= i).
-        { eapply Hbound_prev; eauto. }
-        left. split.
-        -- simpl. left. reflexivity.
-        -- lia.
-      * destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [HfocusA Hneq].
-        assert (Hneq_focus : (l_focus, r0) <> (l, r)).
-        { intro Heq. inversion Heq; subst. contradiction. }
-        assert (Hneq_nur : (l0, r0) <> (l, r)).
-        { intro Heq_nur. inversion Heq_nur; subst. contradiction. }
-        rewrite lookup_loc_extend_neq in Hlkfocus by exact Hneq_focus.
-        rewrite lookup_loc_extend_neq in Hlk by exact Hneq_nur.
-        destruct (Hbound _ _ _ _ _ HfocusA Hlkfocus HinOld Hlk)
-          as [[HinFocus Hle] | [T [j [HSigma [Hew Hlt]]]]].
-        -- left. split.
-           ++ simpl. right. exact HinFocus.
-           ++ exact Hle.
-        -- right. exists T, j. repeat split; assumption.
-Qed.
-
-Lemma runtime_nursery_wf_letloc_after :
-  forall DI Sigma C A N M S l l1 r tc_prev i j,
-    runtime_nursery_wf DI Sigma A N M S ->
-    store_wf DI Sigma C A N M S ->
-    letloc_fresh_ctx Sigma C A N (l, r) ->
-    In (r, AP_Loc (l1, r)) A ->
-    In ((l1, r), tc_prev) Sigma ->
-    lookup_loc M (l1, r) = Some (r, i) ->
-    end_witness DI S (r, i) tc_prev (r, j) ->
-    runtime_nursery_wf DI Sigma
-                       (extend_alloc A r (AP_Loc (l, r)))
-                       (extend_nursery N (l, r))
-                       (extend_loc M (l, r) (r, j))
-                       S.
-Proof.
-  intros DI Sigma C A N M S l l1 r tc_prev i j
-         [Hfun [Hinj [Htracked Hbound]]]
-         Hwf [_ [_ [_ HfreshN]]] Hfocus_prev Hsigma_prev Hlookup_prev Hew.
-  destruct Hwf as [_ [_ [Halloc [Hdisj1 Hdisj2]]]].
-  destruct Halloc as [_ [_ [Hwrite _]]].
-  pose proof (end_witness_gt _ _ _ _ _ _ Hew) as Hgt.
-  assert (Hbound_prev :
-    forall l0 i0,
-      In (l0, r) N ->
-      lookup_loc M (l0, r) = Some (r, i0) ->
-      i0 < j).
-  { intros l0 i0 HinN HlkN.
-    destruct (Hbound r l1 i l0 i0 Hfocus_prev Hlookup_prev HinN HlkN)
-      as [[HinFocus Hle] | [T [j0 [HSigma [Hew0 Hlt]]]]].
-    - exfalso. eapply (Hdisj1 l1 r tc_prev Hsigma_prev HinFocus).
-    - assert (HTeq : T = tc_prev).
-      { inversion Hew0; inversion Hew; subst.
-        match goal with
-        | Hh1 : heap_lookup _ _ _ = Some _,
-          Hh2 : heap_lookup _ _ _ = Some _ |- _ =>
-            rewrite Hh1 in Hh2; inversion Hh2; subst
-        end;
-        match goal with
-        | Hd1 : lookup_datacon _ _ = Some (_, _),
-          Hd2 : lookup_datacon _ _ = Some (_, _) |- _ =>
-            rewrite Hd1 in Hd2; inversion Hd2; reflexivity
-        end. }
-      subst T.
-      assert (Hj0 : (r, j0) = (r, j)).
-      { eapply end_witness_functional; eauto. }
-      inversion Hj0; subst. exact Hlt.
-  }
-  repeat split.
-  - apply alloc_env_functional_extend_alloc. exact Hfun.
-  - intros lr1 lr2 cl Hin1 Hin2 Hlk1 Hlk2.
-    destruct (in_extend_nursery_inv _ _ _ Hin1) as [Heq1 | Hin1old];
-    destruct (in_extend_nursery_inv _ _ _ Hin2) as [Heq2 | Hin2old].
-    + subst. reflexivity.
-    + subst lr1. rewrite lookup_loc_extend_eq in Hlk1. inversion Hlk1; subst cl.
-      assert (Hneq : lr2 <> (l, r)).
-      { intro Heq. apply HfreshN. subst. exact Hin2old. }
-      rewrite lookup_loc_extend_neq in Hlk2 by exact Hneq.
-      destruct lr2 as [l2 r2].
-      destruct (Hwrite l2 r2 Hin2old) as [i2 [Hnur_lookup _]].
-      assert (Hr2 : r2 = r).
-      { rewrite Hnur_lookup in Hlk2. inversion Hlk2. reflexivity. }
-      subst r2.
-      assert (Hlt : i2 < j) by (eapply Hbound_prev; eauto).
-      rewrite Hnur_lookup in Hlk2. inversion Hlk2; subst i2.
-      lia.
-    + subst lr2. rewrite lookup_loc_extend_eq in Hlk2. inversion Hlk2; subst cl.
-      assert (Hneq : lr1 <> (l, r)).
-      { intro Heq. apply HfreshN. subst. exact Hin1old. }
-      rewrite lookup_loc_extend_neq in Hlk1 by exact Hneq.
-      destruct lr1 as [l1' r1'].
-      destruct (Hwrite l1' r1' Hin1old) as [i1 [Hnur_lookup _]].
-      assert (Hr1 : r1' = r).
-      { rewrite Hnur_lookup in Hlk1. inversion Hlk1. reflexivity. }
-      subst r1'.
-      assert (Hlt : i1 < j) by (eapply Hbound_prev; eauto).
-      rewrite Hnur_lookup in Hlk1. inversion Hlk1; subst i1.
-      lia.
-    + assert (Hneq1 : lr1 <> (l, r)).
-      { intro Heq. apply HfreshN. subst. exact Hin1old. }
-      assert (Hneq2 : lr2 <> (l, r)).
-      { intro Heq. apply HfreshN. subst. exact Hin2old. }
-      rewrite lookup_loc_extend_neq in Hlk1 by exact Hneq1.
-      rewrite lookup_loc_extend_neq in Hlk2 by exact Hneq2.
-      eapply Hinj; eauto.
-  - intros l0 r0 HinN.
-    destruct (in_extend_nursery_inv _ _ _ HinN) as [Heq | HinOld].
-    + inversion Heq; subst. exists l. apply in_extend_alloc_new.
-    + destruct (region_var_eq_dec r0 r) as [Heq | Hneq].
-      * subst. exists l. apply in_extend_alloc_new.
-      * destruct (Htracked l0 r0 HinOld) as [l_focus Hfocus].
-        exists l_focus. eapply in_extend_alloc_old; eauto.
-  - intros r0 l_focus i_focus l0 i0 Hfocus Hlkfocus HinN Hlk.
-    destruct (in_extend_nursery_inv _ _ _ HinN) as [HeqN | HinOld].
-    + inversion HeqN; subst.
-      simpl in Hfocus.
-      destruct Hfocus as [Heq | Hfocus_old].
-      * inversion Heq; subst.
-        rewrite lookup_loc_extend_eq in Hlkfocus.
-        rewrite lookup_loc_extend_eq in Hlk.
-        inversion Hlkfocus; inversion Hlk; subst.
-        left. split.
-        -- simpl. left. reflexivity.
-        -- lia.
-      * destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [_ Hneq].
-        contradiction.
-    + simpl in Hfocus.
-      destruct Hfocus as [Heq | Hfocus_old].
-      * inversion Heq; subst.
-        assert (Hneq_nur : (l0, r0) <> (l_focus, r0)).
-        { intro Heq_nur. apply HfreshN. inversion Heq_nur; subst. exact HinOld. }
-        rewrite lookup_loc_extend_eq in Hlkfocus.
-        rewrite lookup_loc_extend_neq in Hlk by exact Hneq_nur.
-        inversion Hlkfocus; subst i_focus.
-        assert (Hlt : i0 < j).
-        { eapply Hbound_prev; eauto. }
-        left. split.
-        -- simpl. left. reflexivity.
-        -- lia.
-      * destruct (in_remove_alloc_region_inv _ _ _ _ Hfocus_old) as [HfocusA Hneq].
-        assert (Hneq_focus : (l_focus, r0) <> (l, r)).
-        { intro Heq. inversion Heq; subst. contradiction. }
-        assert (Hneq_nur : (l0, r0) <> (l, r)).
-        { intro Heq. inversion Heq; subst. contradiction. }
-        rewrite lookup_loc_extend_neq in Hlkfocus by exact Hneq_focus.
-        rewrite lookup_loc_extend_neq in Hlk by exact Hneq_nur.
-        destruct (Hbound _ _ _ _ _ HfocusA Hlkfocus HinOld Hlk)
-          as [[HinFocus Hle] | [T [j0 [HSigma [Hew0 Hlt]]]]].
-        -- left. split.
-           ++ simpl. right. exact HinFocus.
-           ++ exact Hle.
-        -- right. exists T, j0. repeat split; assumption.
-Qed.
-
 Lemma has_type_sigma_c_monotone :
   (forall FDs DI G Sigma C A N A' N' e T,
       has_type FDs DI G Sigma C A N A' N' e T ->
@@ -3813,29 +2731,6 @@ Corollary expr_has_type_sigma_c_monotone :
 Proof.
   intros. destruct has_type_sigma_c_monotone as [Hex _]. eauto.
 Qed.
-
-Corollary pat_has_type_sigma_c_monotone :
-  forall FDs DI tc_s G Sigma C A N A' N' T p,
-    pat_has_type FDs DI tc_s G Sigma C A N A' N' T p ->
-    forall Sigma' C',
-      store_extends Sigma Sigma' ->
-      conloc_extends C C' ->
-      pat_has_type FDs DI tc_s G Sigma' C' A N A' N' T p.
-Proof.
-  intros. destruct has_type_sigma_c_monotone as [_ [Hpat _]]. eauto.
-Qed.
-
-Corollary pats_have_type_sigma_c_monotone :
-  forall FDs DI tc_s G Sigma C A N A' N' T ps,
-    pats_have_type FDs DI tc_s G Sigma C A N A' N' T ps ->
-    forall Sigma' C',
-      store_extends Sigma Sigma' ->
-      conloc_extends C C' ->
-      pats_have_type FDs DI tc_s G Sigma' C' A N A' N' T ps.
-Proof.
-  intros. destruct has_type_sigma_c_monotone as [_ [_ Hps]]. eauto.
-Qed.
-
 Lemma existsb_bind_hit :
   forall x (binds : list (term_var * ty)),
     existsb
@@ -3849,23 +2744,6 @@ Proof.
     + exists t. left. subst. reflexivity.
     + apply IH in Hhit as [t' Hin]. exists t'. right. exact Hin.
 Qed.
-
-Lemma existsb_bind_miss :
-  forall x (binds : list (term_var * ty)) t,
-    existsb
-      (fun b => if term_var_eq_dec x (fst b) then true else false)
-      binds = false ->
-    ~ In (x, t) binds.
-Proof.
-  intros x0 binds. induction binds as [| [y u] binds IH]; intros t Hmiss Hin; simpl in *.
-  - exact Hin.
-  - destruct (term_var_eq_dec x0 y) as [Heq | Hneq].
-    + discriminate.
-    + destruct Hin as [Hin | Hin].
-      * inversion Hin; subst. contradiction.
-      * eapply IH; eauto.
-Qed.
-
 Lemma in_extend_store_list :
   forall S0 entries ent,
     In ent S0 ->
@@ -3968,24 +2846,6 @@ Proof.
          binds);
       constructor; assumption.
 Qed.
-
-Lemma pats_case_fresh_ctx_subst_pats_val :
-  forall Sigma C A N ps z s,
-    pats_case_fresh_ctx Sigma C A N ps ->
-    pats_case_fresh_ctx Sigma C A N (subst_pats_val z s ps).
-Proof.
-  intros Sigma C A N ps z s Hfresh.
-  induction Hfresh as [| p ps Hp Hps IH]; simpl.
-  - constructor.
-  - destruct p as [dc binds body]. simpl.
-    destruct
-      (existsb
-         (fun b : term_var * ty =>
-            if term_var_eq_dec z (fst b) then true else false)
-         binds);
-      constructor; assumption.
-Qed.
-
 Lemma pats_case_wf_In :
   forall r_s ps dc binds body,
     pats_case_wf r_s ps ->
@@ -4009,115 +2869,6 @@ Proof.
   simpl in Hfresh.
   exact Hfresh.
 Qed.
-
-Lemma pat_bindings_fresh_ctx_In_laddr :
-  forall Sigma C A N binds lr,
-    pat_bindings_fresh_ctx Sigma C A N binds ->
-    In lr (pat_laddrs binds) ->
-    letloc_fresh_ctx Sigma C A N lr.
-Proof.
-  intros Sigma C A N binds lr Hfresh Hin.
-  eapply Forall_forall; eauto.
-Qed.
-
-Lemma runtime_nursery_wf_case :
-  forall DI Sigma C A N M S rc binds indices,
-    runtime_nursery_wf DI Sigma A N M S ->
-    pat_bindings_fresh_ctx Sigma C A N binds ->
-    runtime_nursery_wf DI Sigma A N (extend_loc_fields M rc binds indices) S.
-Proof.
-  intros DI Sigma C A N M S rc binds indices
-         [Hfun [Hinj [Htracked Hbound]]] Hfresh.
-  repeat split.
-  - exact Hfun.
-  - intros lr1 lr2 cl Hin1 Hin2 Hlk1 Hlk2.
-    assert (Hmiss1 : ~ In lr1 (pat_laddrs binds)).
-    { intro Hin.
-      pose proof (pat_bindings_fresh_ctx_In_laddr _ _ _ _ _ _ Hfresh Hin)
-        as [_ [_ [_ Hnin]]].
-      exact (Hnin Hin1).
-    }
-    assert (Hmiss2 : ~ In lr2 (pat_laddrs binds)).
-    { intro Hin.
-      pose proof (pat_bindings_fresh_ctx_In_laddr _ _ _ _ _ _ Hfresh Hin)
-        as [_ [_ [_ Hnin]]].
-      exact (Hnin Hin2).
-    }
-    rewrite lookup_loc_extend_fields_miss in Hlk1 by exact Hmiss1.
-    rewrite lookup_loc_extend_fields_miss in Hlk2 by exact Hmiss2.
-    eapply Hinj; eauto.
-  - exact Htracked.
-  - intros r l_focus i_focus l i Hfocus Hlkfocus HinN Hlk.
-    assert (Hmiss_focus : ~ In (l_focus, r) (pat_laddrs binds)).
-    { intro Hin.
-      pose proof (pat_bindings_fresh_ctx_In_laddr _ _ _ _ _ _ Hfresh Hin)
-        as [_ [_ [Halloc _]]].
-      apply Halloc.
-      eapply in_alloc_laddrs_of_entry. exact Hfocus.
-    }
-    assert (Hmiss_nur : ~ In (l, r) (pat_laddrs binds)).
-    { intro Hin.
-      pose proof (pat_bindings_fresh_ctx_In_laddr _ _ _ _ _ _ Hfresh Hin)
-        as [_ [_ [_ Hnin]]].
-      exact (Hnin HinN).
-    }
-    rewrite lookup_loc_extend_fields_miss in Hlkfocus by exact Hmiss_focus.
-    rewrite lookup_loc_extend_fields_miss in Hlk by exact Hmiss_nur.
-    eapply Hbound; eauto.
-Qed.
-
-Lemma nodup_pat_term_vars_head_miss :
-  forall x ty binds,
-    NoDup (pat_term_vars ((x, ty) :: binds)) ->
-    existsb
-      (fun b => if term_var_eq_dec x (fst b) then true else false)
-      binds = false.
-Proof.
-  intros x ty binds Hnd.
-  destruct
-    (existsb
-       (fun b => if term_var_eq_dec x (fst b) then true else false)
-       binds) eqn:Hex; auto.
-  exfalso.
-  apply existsb_bind_hit in Hex as [t Hin].
-  inversion Hnd; subst.
-  apply H1.
-  change (In x (pat_term_vars binds)).
-  eapply in_map with (f := fst) in Hin.
-  exact Hin.
-Qed.
-
-Lemma nodup_pat_laddrs_head_miss :
-  forall b binds,
-    NoDup (pat_laddrs (b :: binds)) ->
-    ~ In (bind_laddr b) (pat_laddrs binds).
-Proof.
-  intros b binds Hnd.
-  inversion Hnd; subst.
-  exact H1.
-Qed.
-
-Lemma subst_case_pats_eq :
-  forall z s ps,
-    (let fix go_pats (ps : list pat) : list pat :=
-       match ps with
-       | nil => nil
-       | pat_clause K binds body :: ps' =>
-           (if existsb
-                 (fun b => if term_var_eq_dec z (fst b) then true else false)
-                 binds
-            then pat_clause K binds body
-            else pat_clause K binds (subst_val z s body))
-           :: go_pats ps'
-       end
-     in go_pats ps) = subst_pats_val z s ps.
-Proof.
-  intros z s ps.
-  induction ps as [| [K binds body] ps IH]; simpl.
-  - reflexivity.
-  - f_equal. exact IH.
-Qed.
-
 Lemma subst_val_case :
   forall z s scrut ps,
     subst_val z s (e_case scrut ps) =
@@ -4516,508 +3267,6 @@ Proof.
   destruct substitution_val_mutual as [Hex _].
   eapply Hex with (prefix := nil) (z := x) (uty := vty) (Gamma := Gamma) (s := v0); eauto.
 Qed.
-
-Lemma substitution_val_prefix :
-  forall FDs DI prefix Gamma x vty Sigma C A N A' N' e T v0,
-    has_type FDs DI ((prefix ++ (x, vty) :: Gamma)%list) Sigma C A N A' N' e T ->
-    lookup_tenv prefix x = None ->
-    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A N (e_val v0) vty ->
-    (forall y, In y (val_term_vars v0) -> ~ In y (expr_bound_term_vars e)) ->
-    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A' N' (subst_val x v0 e) T.
-Proof.
-  intros FDs DI prefix Gamma x vty Sigma C A N A' N' e T v0 HT Hnone Hs Hfresh.
-  destruct substitution_val_mutual as [Hex _].
-  eapply Hex with (prefix := prefix) (z := x) (uty := vty) (Gamma := Gamma) (s := v0); eauto.
-Qed.
-
-Lemma typed_nil_value_has_type_fresh :
-  forall FDs DI Sigma C A N vl T,
-    has_type FDs DI nil Sigma C A N A N (e_val vl) T ->
-    has_type_fresh FDs DI nil Sigma C A N A N (e_val vl) T.
-Proof.
-  intros FDs DI Sigma C A N vl T Hty.
-  inversion Hty; subst; simpl in *.
-  - discriminate.
-  - constructor.
-Qed.
-
-Lemma value_has_type_fresh :
-  forall FDs DI G Sigma C A N vl T,
-    has_type FDs DI G Sigma C A N A N (e_val vl) T ->
-    has_type_fresh FDs DI G Sigma C A N A N (e_val vl) T.
-Proof.
-  intros FDs DI G Sigma C A N vl T Hty.
-  inversion Hty; subst; simpl in *.
-  - constructor.
-  - constructor.
-Qed.
-
-Lemma typed_nil_value_has_type_fresh_any_context :
-  forall FDs DI G Sigma C A N vl T,
-    has_type FDs DI nil Sigma C A N A N (e_val vl) T ->
-    has_type_fresh FDs DI G Sigma C A N A N (e_val vl) T.
-Proof.
-  intros FDs DI G Sigma C A N vl T Hty.
-  pose proof (typed_nil_value_has_type_fresh FDs DI Sigma C A N vl T Hty) as HF.
-  exact (expr_has_type_fresh_tenv_irrelevant
-           FDs DI nil Sigma C A N A N (e_val vl) T HF G).
-Qed.
-
-Definition paired_subst_expr_fresh_case
-    FDs DI G Sigma C A N A' N' e T
-    (HF : has_type_fresh FDs DI G Sigma C A N A' N' e T) : Prop :=
-  forall (HT : has_type FDs DI G Sigma C A N A' N' e T)
-         prefix z uty Gamma s,
-    G = ((prefix ++ (z, uty) :: Gamma)%list) ->
-    lookup_tenv prefix z = None ->
-    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A N (e_val s) uty ->
-    (forall y, In y (val_term_vars s) -> ~ In y (expr_bound_term_vars e)) ->
-    has_type_fresh FDs DI (prefix ++ Gamma)%list Sigma C A N A' N' (subst_val z s e) T.
-
-Definition paired_subst_pat_fresh_case
-    FDs DI tc_s G Sigma C A N A' N' T p
-    (HF : pat_has_type_fresh FDs DI tc_s G Sigma C A N A' N' T p) : Prop :=
-  forall tc_s_ordinary
-         (HT : pat_has_type FDs DI tc_s_ordinary G Sigma C A N A' N' T p)
-         prefix z uty Gamma s,
-    G = ((prefix ++ (z, uty) :: Gamma)%list) ->
-    lookup_tenv prefix z = None ->
-    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A N (e_val s) uty ->
-    (forall y, In y (val_term_vars s) -> ~ In y (pat_bound_term_vars p)) ->
-    pat_has_type_fresh FDs DI tc_s (prefix ++ Gamma)%list Sigma C A N A' N' T
-                       (subst_pat_val z s p).
-
-Definition paired_subst_pats_fresh_case
-    FDs DI tc_s G Sigma C A N A' N' T ps
-    (HF : pats_have_type_fresh FDs DI tc_s G Sigma C A N A' N' T ps) : Prop :=
-  forall tc_s_ordinary
-         (HT : pats_have_type FDs DI tc_s_ordinary G Sigma C A N A' N' T ps)
-         prefix z uty Gamma s,
-    G = ((prefix ++ (z, uty) :: Gamma)%list) ->
-    lookup_tenv prefix z = None ->
-    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A N (e_val s) uty ->
-    (forall y, In y (val_term_vars s) -> ~ In y (pats_bound_term_vars ps)) ->
-    pats_have_type_fresh FDs DI tc_s (prefix ++ Gamma)%list Sigma C A N A' N' T
-                        (subst_pats_val z s ps).
-
-Theorem substitution_val_paired_fresh_mutual :
-  (forall FDs DI G Sigma C A N A' N' e T
-      (HF : has_type_fresh FDs DI G Sigma C A N A' N' e T),
-      paired_subst_expr_fresh_case FDs DI G Sigma C A N A' N' e T HF)
-  /\
-  (forall FDs DI tc_s G Sigma C A N A' N' T p
-      (HF : pat_has_type_fresh FDs DI tc_s G Sigma C A N A' N' T p),
-      paired_subst_pat_fresh_case FDs DI tc_s G Sigma C A N A' N' T p HF)
-  /\
-  (forall FDs DI tc_s G Sigma C A N A' N' T ps
-      (HF : pats_have_type_fresh FDs DI tc_s G Sigma C A N A' N' T ps),
-      paired_subst_pats_fresh_case FDs DI tc_s G Sigma C A N A' N' T ps HF).
-Proof.
-  eapply has_type_fresh_mutind.
-  - intros FDs DI G Sigma C A N x tc l r HT prefix z uty Gamma s HG Hnone Hs Hfresh.
-    unfold paired_subst_expr_fresh_case in *.
-    subst G. simpl in *.
-    inversion HT; subst; clear HT.
-    repeat rewrite lookup_tenv_app in *.
-    destruct (lookup_tenv prefix x) eqn:Hprefix.
-    + destruct (term_var_eq_dec z x) as [Heq | Hneq].
-      * subst x. rewrite Hnone in Hprefix. discriminate.
-      * apply TF_Var.
-    + simpl in *.
-      destruct (term_var_eq_dec x z) as [Heq | Hneq].
-      * subst x.
-        destruct (term_var_eq_dec z z); [| contradiction].
-        match goal with
-        | Hlookup : Some _ = Some _ |- _ =>
-            inversion Hlookup; subst
-        end.
-        exact (value_has_type_fresh _ _ _ _ _ _ _ _ _ Hs).
-      * simpl. destruct (term_var_eq_dec z x) as [Heqzx | Hneqzx].
-        { exfalso. apply Hneq. symmetry. exact Heqzx. }
-        apply TF_Var.
-  - intros FDs DI G Sigma C A N r0 i l r tc HT prefix z uty Gamma s HG Hnone Hs Hfresh.
-    unfold paired_subst_expr_fresh_case in *.
-    subst G. simpl. apply TF_ConcreteLoc.
-  - intros FDs DI G Sigma C A N A1 N1 A2 N2 x e1 e2 tc1 l1 r1 tc2 l2 r2
-      Hfresh1 IH1 Hfresh2 IH2 HT prefix z uty Gamma s HG Hnone Hs Hfresh.
-    unfold paired_subst_expr_fresh_case in *.
-    subst G. simpl.
-    eapply has_type_let_inv in HT as [A1t [N1t [Hty1 Hty2]]].
-    destruct has_type_fresh_outputs_mutual as [Hexfresh _].
-    destruct (Hexfresh _ _ _ _ _ _ _ _ _ _ _ Hty1 _ _ Hfresh1) as [HA1 HN1].
-    subst A1t N1t.
-    assert (Hfresh_e1 :
-      forall y, In y (val_term_vars s) -> ~ In y (expr_bound_term_vars e1)).
-    { intros y Hy Hin.
-      apply (Hfresh y Hy). simpl. apply in_or_app. left. exact Hin. }
-    eapply TF_Let.
-    + eapply IH1; eauto.
-    + destruct (term_var_eq_dec z x) as [Heq | Hneq].
-      * subst x. simpl.
-        eapply expr_has_type_fresh_tenv_irrelevant
-          with (G' := extend_tenv ((prefix ++ Gamma)%list) z (LocTy tc1 l1 r1)).
-        exact Hfresh2.
-      * simpl.
-        assert (Hs_mid :
-          has_type FDs DI (((x, LocTy tc1 l1 r1) :: prefix ++ Gamma)%list)
-                   Sigma C A N A N (e_val s) uty).
-        { change (((x, LocTy tc1 l1 r1) :: prefix ++ Gamma)%list)
-            with (extend_tenv ((prefix ++ Gamma)%list) x (LocTy tc1 l1 r1)).
-          eapply value_typing_extend_tenv_miss.
-          - exact Hs.
-          - intro Hinx.
-            apply (Hfresh x Hinx).
-            simpl. apply in_or_app. right. simpl. left. reflexivity.
-        }
-        assert (Hs_ext :
-          has_type FDs DI (((x, LocTy tc1 l1 r1) :: prefix ++ Gamma)%list)
-                   (extend_store Sigma (l1, r1) tc1) C A1 N1 A1 N1 (e_val s) uty).
-        { eapply value_typing_any_context.
-          - exact Hs_mid.
-          - intros y. reflexivity.
-          - intros lr tc' Hin. simpl. right. exact Hin.
-        }
-        assert (Hfresh_e2 :
-          forall y, In y (val_term_vars s) -> ~ In y (expr_bound_term_vars e2)).
-        { intros y Hy Hin.
-          apply (Hfresh y Hy).
-          apply in_or_app. right. simpl. right. exact Hin.
-        }
-        change
-          (has_type_fresh FDs DI
-             (((x, LocTy tc1 l1 r1) :: prefix ++ Gamma)%list)
-             (extend_store Sigma (l1, r1) tc1) C A1 N1 A2 N2
-             (subst_val z s e2) (LocTy tc2 l2 r2)).
-        specialize
-          (IH2 Hty2 ((x, LocTy tc1 l1 r1) :: prefix) z uty Gamma s
-             eq_refl).
-        simpl in IH2.
-        assert (Hnone' :
-          (if term_var_eq_dec z x
-           then Some (LocTy tc1 l1 r1)
-           else lookup_tenv prefix z) = None).
-        { destruct (term_var_eq_dec z x); [contradiction | exact Hnone]. }
-        specialize (IH2 Hnone' Hs_ext).
-        specialize (IH2 Hfresh_e2).
-        exact IH2.
-  - intros FDs DI G Sigma C A N A' N' r e t Hreg Hfresh_body IH HT prefix z uty Gamma s HG Hnone Hs Hfresh_s.
-    unfold paired_subst_expr_fresh_case in *.
-    subst G. simpl.
-    inversion HT; subst; clear HT.
-    eapply TF_LRegion.
-    + exact Hreg.
-    + eapply IH.
-      * exact H12.
-      * reflexivity.
-      * exact Hnone.
-      * eapply value_typing_any_context.
-        -- exact Hs.
-        -- intros y. reflexivity.
-        -- intros lr tc' Hin. exact Hin.
-      * exact Hfresh_s.
-  - intros FDs DI G Sigma C A N A'' N'' l r e tc' l' r'
-      Hctx Hfresh_body IH HT prefix z uty Gamma s HG Hnone Hs Hfresh_s.
-    unfold paired_subst_expr_fresh_case in *.
-    subst G. simpl.
-    inversion HT; subst; clear HT.
-    assert (Hs_body :
-      has_type FDs DI (prefix ++ Gamma)%list Sigma
-        (extend_conloc C (l, r) (LE_Start r))
-        (extend_alloc A r (AP_Loc (l, r)))
-        (extend_nursery N (l, r))
-        (extend_alloc A r (AP_Loc (l, r)))
-        (extend_nursery N (l, r))
-        (e_val s) uty).
-    { eapply value_typing_any_context.
-      - exact Hs.
-      - intros y. reflexivity.
-      - intros lr tc0 Hin. exact Hin.
-    }
-    match goal with
-    | Hbody : has_type FDs DI (prefix ++ (z, uty) :: Gamma)%list Sigma
-                 (extend_conloc C (l, r) (LE_Start r))
-                 (extend_alloc A r (AP_Loc (l, r)))
-                 (extend_nursery N (l, r))
-                 A'' N'' e (LocTy tc' l' r') |- _ =>
-        exact (TF_LLStart FDs DI (prefix ++ Gamma)%list Sigma C A N A'' N''
-                 l r (subst_val z s e) tc' l' r' Hctx
-                 (IH Hbody prefix z uty Gamma s eq_refl Hnone Hs_body Hfresh_s))
-    end.
-  - intros FDs DI G Sigma C A N A'' N'' l lprev r e tc'' l'' r''
-      Hctx Hfresh_body IH HT prefix z uty Gamma s HG Hnone Hs Hfresh_s.
-    unfold paired_subst_expr_fresh_case in *.
-    subst G. simpl.
-    inversion HT; subst; clear HT.
-    assert (Hs_body :
-      has_type FDs DI (prefix ++ Gamma)%list Sigma
-        (extend_conloc C (l, r) (LE_Next lprev r))
-        (extend_alloc A r (AP_Loc (l, r)))
-        (extend_nursery N (l, r))
-        (extend_alloc A r (AP_Loc (l, r)))
-        (extend_nursery N (l, r))
-        (e_val s) uty).
-    { eapply value_typing_any_context.
-      - exact Hs.
-      - intros y. reflexivity.
-      - intros lr tc0 Hin. exact Hin.
-    }
-    match goal with
-    | Hbody : has_type FDs DI (prefix ++ (z, uty) :: Gamma)%list Sigma
-                 (extend_conloc C (l, r) (LE_Next lprev r))
-                 (extend_alloc A r (AP_Loc (l, r)))
-                 (extend_nursery N (l, r))
-                 A'' N'' e (LocTy tc'' l'' r'') |- _ =>
-        exact (TF_LLTag FDs DI (prefix ++ Gamma)%list Sigma C A N A'' N''
-                 l lprev r (subst_val z s e) tc'' l'' r'' Hctx
-                 (IH Hbody prefix z uty Gamma s eq_refl Hnone Hs_body Hfresh_s))
-    end.
-  - intros FDs DI G Sigma C A N A'' N'' l l1 r tc_prev e tc' l' r'
-      Hctx Hfresh_body IH HT prefix z uty Gamma s HG Hnone Hs Hfresh_s.
-    unfold paired_subst_expr_fresh_case in *.
-    subst G. simpl.
-    inversion HT; subst; clear HT.
-    assert (Hs_body :
-      has_type FDs DI (prefix ++ Gamma)%list Sigma
-        (extend_conloc C (l, r) (LE_After tc_prev l1 r))
-        (extend_alloc A r (AP_Loc (l, r)))
-        (extend_nursery N (l, r))
-        (extend_alloc A r (AP_Loc (l, r)))
-        (extend_nursery N (l, r))
-        (e_val s) uty).
-    { eapply value_typing_any_context.
-      - exact Hs.
-      - intros y. reflexivity.
-      - intros lr tc0 Hin. exact Hin.
-    }
-    match goal with
-    | Hbody : has_type FDs DI (prefix ++ (z, uty) :: Gamma)%list Sigma
-                 (extend_conloc C (l, r) (LE_After tc_prev l1 r))
-                 (extend_alloc A r (AP_Loc (l, r)))
-                 (extend_nursery N (l, r))
-                 A'' N'' e (LocTy tc' l' r') |- _ =>
-        exact (TF_LLAfter FDs DI (prefix ++ Gamma)%list Sigma C A N A'' N''
-                 l l1 r tc_prev (subst_val z s e) tc' l' r' Hctx
-                 (IH Hbody prefix z uty Gamma s eq_refl Hnone Hs_body Hfresh_s))
-    end.
-  - intros FDs DI G Sigma C A N dc l r vs tc fieldtcs fields HT prefix z uty Gamma s HG Hnone Hs Hfresh.
-    unfold paired_subst_expr_fresh_case in *.
-    subst G. simpl.
-    exact (TF_DataCon FDs DI (prefix ++ Gamma)%list Sigma C A N
-             dc l r (List.map (subst_in_val z s) vs) tc fieldtcs fields).
-  - intros FDs DI G Sigma C A N f lrs vs tc l r f_locs f_params f_retty f_regions f_body
-      HT prefix z uty Gamma s HG Hnone Hs Hfresh.
-    unfold paired_subst_expr_fresh_case in *.
-    subst G. simpl.
-    exact (TF_App FDs DI (prefix ++ Gamma)%list Sigma C A N
-             f lrs (List.map (subst_in_val z s) vs) tc l r
-             f_locs f_params f_retty f_regions f_body).
-  - intros FDs DI G Sigma C A N A' N' scrut ps tc_s l_s r_s t
-      Hcasefresh Hpsfresh IHps HT prefix z uty Gamma s HG Hnone Hs Hfresh.
-    unfold paired_subst_expr_fresh_case in *.
-    subst G. rewrite subst_val_case.
-    inversion HT; subst; clear HT.
-    assert (Hfresh_ps :
-      forall y, In y (val_term_vars s) -> ~ In y (pats_bound_term_vars ps)).
-    { intros y Hy Hin. apply (Hfresh y Hy). simpl. exact Hin. }
-    refine
-      (TF_Case FDs DI (prefix ++ Gamma)%list Sigma C A N A' N'
-         (subst_in_val z s scrut) (subst_pats_val z s ps) tc_s l_s r_s t _ _).
-    + eapply pats_case_fresh_ctx_subst_pats_val.
-      exact Hcasefresh.
-    + eapply IHps.
-      * exact H14.
-      * reflexivity.
-      * exact Hnone.
-      * exact Hs.
-      * exact Hfresh_ps.
-  - intros FDs DI tc_s G Sigma C A N A' N' dc binds body tc fieldtcs tc_res l r
-      Hfresh_body IH tc_s_ordinary HT prefix z uty Gamma s HG Hnone Hs Hfresh.
-    unfold paired_subst_pat_fresh_case in *.
-    subst G. simpl.
-    inversion HT; subst; clear HT.
-    destruct
-      (existsb
-         (fun b : term_var * ty =>
-            if term_var_eq_dec z (fst b) then true else false)
-         binds) eqn:Hbinds; simpl.
-    + replace
-        (existsb
-           (fun b : term_var * located_type =>
-              if term_var_eq_dec z (fst b) then true else false)
-           binds)
-        with true by (symmetry; exact Hbinds).
-      refine
-        (TF_Pat FDs DI tc_s (prefix ++ Gamma)%list Sigma C A N A' N'
-           dc binds body tc fieldtcs tc_res l r _).
-      eapply expr_has_type_fresh_tenv_irrelevant
-        with (G' := extend_tenv_list (prefix ++ Gamma)%list binds).
-      exact Hfresh_body.
-    + replace
-        (existsb
-           (fun b : term_var * located_type =>
-              if term_var_eq_dec z (fst b) then true else false)
-           binds)
-        with false by (symmetry; exact Hbinds).
-      refine
-        (TF_Pat FDs DI tc_s (prefix ++ Gamma)%list Sigma C A N A' N'
-           dc binds (subst_val z s body) tc fieldtcs tc_res l r _).
-      replace (extend_tenv_list ((prefix ++ Gamma)%list) binds)
-        with ((extend_tenv_list prefix binds ++ Gamma)%list).
-      * eapply IH.
-        -- exact H19.
-        -- repeat rewrite extend_tenv_list_rev.
-           rewrite <- app_assoc. reflexivity.
-        -- apply lookup_tenv_extend_tenv_list_miss; assumption.
-        -- eapply value_typing_any_context.
-           ++ eapply value_typing_extend_tenv_list_disjoint.
-              ** exact Hs.
-              ** intros x t HinBind Hinx.
-                 apply (Hfresh x Hinx). simpl. apply in_or_app. left.
-                 change (In x (pat_term_vars binds)).
-                 eapply in_map with (f := fst) in HinBind.
-                 exact HinBind.
-           ++ intros y.
-              repeat rewrite extend_tenv_list_rev.
-              rewrite <- app_assoc.
-              reflexivity.
-           ++ intros ent tc' Hin. apply in_extend_store_list. exact Hin.
-        -- intros y Hy HinBody.
-           apply (Hfresh y Hy). simpl. apply in_or_app. right. exact HinBody.
-      * repeat rewrite extend_tenv_list_rev.
-        rewrite <- app_assoc. reflexivity.
-  - intros FDs DI tc_s G Sigma C A N t tc_s_ordinary HT prefix z uty Gamma s HG Hnone Hs Hfresh.
-    unfold paired_subst_pats_fresh_case in *.
-    subst G. simpl. constructor.
-  - intros FDs DI tc_s G Sigma C A N A' N' t p ps
-      Hfresh_pat IHpat Hfresh_ps IHps tc_s_ordinary HT prefix z uty Gamma s HG Hnone Hs Hfresh.
-    unfold paired_subst_pats_fresh_case in *.
-    subst G. simpl.
-    inversion HT; subst; clear HT.
-    eapply TF_PatsCons.
-    + match goal with
-      | Hpat : pat_has_type FDs DI tc_s_ordinary
-                 (prefix ++ (z, uty) :: Gamma)%list Sigma C A N A' N' t p |- _ =>
-          eapply IHpat;
-            [ exact Hpat
-            | reflexivity
-            | exact Hnone
-            | exact Hs
-            | intros y Hy HinPat;
-              apply (Hfresh y Hy); simpl; apply in_or_app; left; exact HinPat ]
-      end.
-    + match goal with
-      | Hps0 : pats_have_type FDs DI tc_s_ordinary
-                  (prefix ++ (z, uty) :: Gamma)%list Sigma C A N A' N' t ps |- _ =>
-          eapply IHps;
-            [ exact Hps0
-            | reflexivity
-            | exact Hnone
-            | exact Hs
-            | intros y Hy HinPs;
-              apply (Hfresh y Hy); simpl; apply in_or_app; right; exact HinPs ]
-      end.
-Qed.
-
-Lemma substitution_val_fresh_paired_prefix :
-  forall FDs DI prefix Gamma x vty Sigma C A N A' N' e T v0,
-    has_type FDs DI ((prefix ++ (x, vty) :: Gamma)%list) Sigma C A N A' N' e T ->
-    has_type_fresh FDs DI ((prefix ++ (x, vty) :: Gamma)%list) Sigma C A N A' N' e T ->
-    lookup_tenv prefix x = None ->
-    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A N (e_val v0) vty ->
-    (forall y, In y (val_term_vars v0) -> ~ In y (expr_bound_term_vars e)) ->
-    has_type_fresh FDs DI (prefix ++ Gamma)%list Sigma C A N A' N' (subst_val x v0 e) T.
-Proof.
-  intros FDs DI prefix Gamma x vty Sigma C A N A' N' e T v0 HT HF Hnone Hs Hfresh.
-  destruct substitution_val_paired_fresh_mutual as [Hex _].
-  eapply Hex with (prefix := prefix) (z := x) (uty := vty) (Gamma := Gamma) (s := v0); eauto.
-Qed.
-
-Lemma substitution_val_fresh_paired :
-  forall FDs DI Gamma x vty Sigma C A N A' N' e T v0,
-    has_type FDs DI (cons (x, vty) Gamma) Sigma C A N A' N' e T ->
-    has_type_fresh FDs DI (cons (x, vty) Gamma) Sigma C A N A' N' e T ->
-    has_type FDs DI Gamma Sigma C A N A N (e_val v0) vty ->
-    (forall y, In y (val_term_vars v0) -> ~ In y (expr_bound_term_vars e)) ->
-    has_type_fresh FDs DI Gamma Sigma C A N A' N' (subst_val x v0 e) T.
-Proof.
-  intros FDs DI Gamma x vty Sigma C A N A' N' e T v0 HT HF Hs Hfresh.
-  eapply substitution_val_fresh_paired_prefix with (prefix := nil); eauto.
-Qed.
-
-Lemma subst_case_bindings :
-  forall FDs DI G Sigma0 C A N Aout Nout rc binds indices body T,
-    NoDup (pat_term_vars binds) ->
-    List.length binds = List.length indices ->
-    has_type FDs DI (extend_tenv_list G binds)
-             (extend_store_list Sigma0 (pat_store_entries binds))
-             C A N Aout Nout body T ->
-    has_type FDs DI G
-             (extend_store_list Sigma0 (pat_store_entries binds))
-             C A N Aout Nout
-             (subst_vals (pat_term_vars binds) (build_cloc_vals rc binds indices) body) T.
-Proof.
-  intros FDs DI G Sigma0 C A N Aout Nout rc binds indices body T Hnd Hlen Hty.
-  revert G Sigma0 indices body T Hnd Hlen Hty.
-  induction binds as [| [x [tc l r]] binds IH];
-    intros G Sigma0 indices body T Hnd Hlen Hty; simpl in *.
-  - destruct indices; simpl in *.
-    + exact Hty.
-    + discriminate.
-  - destruct indices as [| i indices].
-    + discriminate.
-    + inversion Hnd as [| x0 xs Hnotin Hnd_tail]; subst.
-      inversion Hlen; subst.
-      rewrite extend_tenv_list_rev in Hty.
-      simpl in Hty.
-      assert (Hmiss :
-        existsb
-          (fun b => if term_var_eq_dec x (fst b) then true else false)
-          binds = false).
-      { eapply (nodup_pat_term_vars_head_miss x (LocTy tc l r) binds).
-        exact Hnd. }
-      assert (Hnone :
-        lookup_tenv (rev binds) x = None).
-      { replace (rev binds) with ((rev binds ++ [])%list) by (rewrite app_nil_r; reflexivity).
-        rewrite <- extend_tenv_list_rev.
-        eapply lookup_tenv_extend_tenv_list_miss.
-        - reflexivity.
-        - exact Hmiss. }
-      assert (Hval :
-        has_type FDs DI ((rev binds ++ G)%list)
-                 (extend_store_list Sigma0 (pat_store_entries ((x, LocTy tc l r) :: binds)))
-                 C A N A N (e_val (v_cloc rc i l r)) (LocTy tc l r)).
-      { apply T_ConcreteLoc.
-        simpl.
-        eapply in_extend_store_list.
-        simpl. left. reflexivity.
-      }
-      assert (Hsub :
-        has_type FDs DI ((rev binds ++ G)%list)
-                 (extend_store_list Sigma0 (pat_store_entries ((x, LocTy tc l r) :: binds)))
-                 C A N Aout Nout
-                 (subst_val x (v_cloc rc i l r) body) T).
-      { eapply substitution_val_prefix.
-        - exact Hty.
-        - exact Hnone.
-        - exact Hval.
-        - intros y Hy. inversion Hy.
-      }
-      simpl in Hsub.
-      simpl.
-      replace
-        (extend_store_list Sigma0 (pat_store_entries ((x, LocTy tc l r) :: binds)))
-        with
-        (extend_store_list (((l, r), tc) :: Sigma0) (pat_store_entries binds))
-        in Hsub
-        by reflexivity.
-      replace (rev binds ++ G)%list with (extend_tenv_list G binds) in Hsub.
-      2:{ rewrite extend_tenv_list_rev. reflexivity. }
-      exact
-        (IH G (((l, r), tc) :: Sigma0) indices
-            (subst_val x (v_cloc rc i l r) body) T
-            Hnd_tail H0 Hsub).
-Qed.
-
 Lemma preservation_let_val_case :
   forall FDs DI G Sigma C A N Aout Nout M S x tc1 l1 r1 vl e2 T,
     has_type FDs DI G Sigma C A N Aout Nout
@@ -5433,6 +3682,127 @@ Proof.
   intros. eapply progress_gen; eassumption || reflexivity.
 Qed.
 
+Lemma lookup_fdecl_In :
+  forall FDs f fd,
+    lookup_fdecl FDs f = Some fd ->
+    In fd FDs.
+Proof.
+  induction FDs as [| fd0 FDs' IH]; intros f fd Hlk; simpl in Hlk.
+  - discriminate.
+  - destruct fd0 as [f0 l0 p0 t0 rg0 b0].
+    destruct (fun_var_eq_dec f f0).
+    + inversion Hlk; subst. left. reflexivity.
+    + right. eapply IH. exact Hlk.
+Qed.
+
+Lemma nodup_pat_term_vars_head_miss :
+  forall x ty binds,
+    NoDup (pat_term_vars ((x, ty) :: binds)) ->
+    existsb
+      (fun b => if term_var_eq_dec x (fst b) then true else false)
+      binds = false.
+Proof.
+  intros x ty binds Hnd.
+  destruct
+    (existsb
+       (fun b => if term_var_eq_dec x (fst b) then true else false)
+       binds) eqn:Hex; auto.
+  exfalso.
+  apply existsb_bind_hit in Hex as [t Hin].
+  inversion Hnd; subst.
+  apply H1.
+  change (In x (pat_term_vars binds)).
+  eapply in_map with (f := fst) in Hin.
+  exact Hin.
+Qed.
+
+Lemma substitution_val_prefix :
+  forall FDs DI prefix Gamma x vty Sigma C A N A' N' e T v0,
+    has_type FDs DI ((prefix ++ (x, vty) :: Gamma)%list) Sigma C A N A' N' e T ->
+    lookup_tenv prefix x = None ->
+    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A N (e_val v0) vty ->
+    (forall y, In y (val_term_vars v0) -> ~ In y (expr_bound_term_vars e)) ->
+    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A' N' (subst_val x v0 e) T.
+Proof.
+  intros FDs DI prefix Gamma x vty Sigma C A N A' N' e T v0 HT Hnone Hs Hfresh.
+  destruct substitution_val_mutual as [Hex _].
+  eapply Hex with (prefix := prefix) (z := x) (uty := vty) (Gamma := Gamma) (s := v0); eauto.
+Qed.
+
+Lemma subst_case_bindings :
+  forall FDs DI G Sigma0 C A N Aout Nout rc binds indices body T,
+    NoDup (pat_term_vars binds) ->
+    List.length binds = List.length indices ->
+    has_type FDs DI (extend_tenv_list G binds)
+             (extend_store_list Sigma0 (pat_store_entries binds))
+             C A N Aout Nout body T ->
+    has_type FDs DI G
+             (extend_store_list Sigma0 (pat_store_entries binds))
+             C A N Aout Nout
+             (subst_vals (pat_term_vars binds) (build_cloc_vals rc binds indices) body) T.
+Proof.
+  intros FDs DI G Sigma0 C A N Aout Nout rc binds indices body T Hnd Hlen Hty.
+  revert G Sigma0 indices body T Hnd Hlen Hty.
+  induction binds as [| [x [tc l r]] binds IH];
+    intros G Sigma0 indices body T Hnd Hlen Hty; simpl in *.
+  - destruct indices; simpl in *.
+    + exact Hty.
+    + discriminate.
+  - destruct indices as [| i indices].
+    + discriminate.
+    + inversion Hnd as [| x0 xs Hnotin Hnd_tail]; subst.
+      inversion Hlen; subst.
+      rewrite extend_tenv_list_rev in Hty.
+      simpl in Hty.
+      assert (Hmiss :
+        existsb
+          (fun b => if term_var_eq_dec x (fst b) then true else false)
+          binds = false).
+      { eapply (nodup_pat_term_vars_head_miss x (LocTy tc l r) binds).
+        exact Hnd. }
+      assert (Hnone :
+        lookup_tenv (rev binds) x = None).
+      { replace (rev binds) with ((rev binds ++ [])%list) by (rewrite app_nil_r; reflexivity).
+        rewrite <- extend_tenv_list_rev.
+        eapply lookup_tenv_extend_tenv_list_miss.
+        - reflexivity.
+        - exact Hmiss. }
+      assert (Hval :
+        has_type FDs DI ((rev binds ++ G)%list)
+                 (extend_store_list Sigma0 (pat_store_entries ((x, LocTy tc l r) :: binds)))
+                 C A N A N (e_val (v_cloc rc i l r)) (LocTy tc l r)).
+      { apply T_ConcreteLoc.
+        simpl.
+        eapply in_extend_store_list.
+        simpl. left. reflexivity.
+      }
+      assert (Hsub :
+        has_type FDs DI ((rev binds ++ G)%list)
+                 (extend_store_list Sigma0 (pat_store_entries ((x, LocTy tc l r) :: binds)))
+                 C A N Aout Nout
+                 (subst_val x (v_cloc rc i l r) body) T).
+      { eapply substitution_val_prefix.
+        - exact Hty.
+        - exact Hnone.
+        - exact Hval.
+        - intros y Hy. inversion Hy.
+      }
+      simpl in Hsub.
+      simpl.
+      replace
+        (extend_store_list Sigma0 (pat_store_entries ((x, LocTy tc l r) :: binds)))
+        with
+        (extend_store_list (((l, r), tc) :: Sigma0) (pat_store_entries binds))
+        in Hsub
+        by reflexivity.
+      replace (rev binds ++ G)%list with (extend_tenv_list G binds) in Hsub.
+      2:{ rewrite extend_tenv_list_rev. reflexivity. }
+      exact
+        (IH G (((l, r), tc) :: Sigma0) indices
+            (subst_val x (v_cloc rc i l r) body) T
+            Hnd_tail H0 Hsub).
+Qed.
+
 (* ================================================================= *)
 (* Theorem: Preservation  (mechanized restatement of thesis §2.2.3)  *)
 (*                                                                    *)
@@ -5654,54 +4024,6 @@ Qed.
 (* D_App case.  That obligation is now explicit, rather than encoded  *)
 (* inside the static function-definition rule.                        *)
 (*                                                                    *)
-(* The mechanization also still lacks a proved closed one-step        *)
-(* subject-reduction theorem for the proof-side freshness judgment.   *)
-(*                                                                    *)
-(* This is not just tactic debt. In a named presentation, D_Let_Expr  *)
-(* can extend Sigma/C with locations introduced while evaluating e1,  *)
-(* and D_App can introduce binders from a freshened function body.    *)
-(* The dynamic semantics now makes the D_App side explicit by         *)
-(* freshening against the caller's current loc-map support.  The      *)
-(* remaining theorem gap is therefore the proof that these explicit    *)
-(* freshness obligations are preserved across steps, not an ambiguity  *)
-(* about what Freshen(FD) is supposed to avoid.                       *)
-(*                                                                    *)
-(* We therefore expose the combined one-step obligation below instead *)
-(* of silently claiming the stronger thesis theorem in this named     *)
-(* mechanization.                                                     *)
-(* ================================================================= *)
-
-Definition fresh_subject_reduction_closed
-    (FDs : fun_env) (DI : datacon_info) : Prop :=
-  forall Sigma C A N Aout Nout Afresh Nfresh M S e T S' M' e'
-         Sigma' C' Ain' Nin',
-    Forall (fdecl_has_type FDs DI) FDs ->
-    Forall (fdecl_instantiation_ok FDs DI) FDs ->
-    has_type FDs DI nil Sigma C A N Aout Nout e T ->
-    has_type_fresh FDs DI nil Sigma C A N Afresh Nfresh e T ->
-    store_wf DI Sigma C A N M S ->
-    expr_wf M e ->
-    step FDs DI S M e S' M' e' ->
-    has_type FDs DI nil Sigma' C' Ain' Nin' Aout Nout e' T ->
-    store_wf DI Sigma' C' Ain' Nin' M' S' ->
-    exists Afresh' Nfresh',
-      has_type_fresh FDs DI nil Sigma' C' Ain' Nin' Afresh' Nfresh' e' T.
-
-Definition expr_wf_subject_reduction_closed
-    (FDs : fun_env) (DI : datacon_info) : Prop :=
-  forall Sigma C A N Aout Nout Afresh Nfresh M S e T S' M' e'
-         Sigma' C' Ain' Nin',
-    Forall (fdecl_has_type FDs DI) FDs ->
-    Forall (fdecl_instantiation_ok FDs DI) FDs ->
-    has_type FDs DI nil Sigma C A N Aout Nout e T ->
-    has_type_fresh FDs DI nil Sigma C A N Afresh Nfresh e T ->
-    store_wf DI Sigma C A N M S ->
-    expr_wf M e ->
-    step FDs DI S M e S' M' e' ->
-    has_type FDs DI nil Sigma' C' Ain' Nin' Aout Nout e' T ->
-    store_wf DI Sigma' C' Ain' Nin' M' S' ->
-    expr_wf M' e'.
-
 Definition closed_subject_reduction_meta
     (FDs : fun_env) (DI : datacon_info) : Prop :=
   forall Sigma C A N Aout Nout Afresh Nfresh M S e T S' M' e',
