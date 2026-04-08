@@ -114,39 +114,11 @@ Fixpoint lookup_fdecl (FDs : list fdecl) (f : fun_var) : option fdecl :=
       end
   end.
 
-(* Shared location/region substitution on syntax-level objects.
-   These are used both by static instantiation and by the dynamic
-   semantics of function application. *)
-
-Definition subst_lvar (old_l new_l : loc_var) (l : loc_var) : loc_var :=
-  if loc_var_eq_dec old_l l then new_l else l.
+(* Shared location/region substitution on syntax-level objects. *)
 
 Definition subst_rvar (old_r new_r : region_var) (r : region_var)
     : region_var :=
   if region_var_eq_dec old_r r then new_r else r.
-
-Definition subst_loc_in_laddr
-    (lo : loc_var) (ro : region_var)
-    (ln : loc_var) (rn : region_var)
-    (a : laddr) : laddr :=
-  let '(l, r) := a in
-  ((if laddr_eq_dec (l, r) (lo, ro) then ln else l),
-   subst_rvar ro rn r).
-
-Definition subst_loc_in_locexp
-    (lo : loc_var) (ro : region_var)
-    (ln : loc_var) (rn : region_var)
-    (le : loc_exp) : loc_exp :=
-  match le with
-  | LE_Start r => LE_Start (subst_rvar ro rn r)
-  | LE_Next l r =>
-      LE_Next (if laddr_eq_dec (l, r) (lo, ro) then ln else l)
-              (subst_rvar ro rn r)
-  | LE_After T l r =>
-      LE_After T
-               (if laddr_eq_dec (l, r) (lo, ro) then ln else l)
-               (subst_rvar ro rn r)
-  end.
 
 Definition subst_loc_in_ty
     (lo : loc_var) (ro : region_var)
@@ -158,25 +130,6 @@ Definition subst_loc_in_ty
              (if laddr_eq_dec (l, r) (lo, ro) then ln else l)
              (subst_rvar ro rn r)
   end.
-
-Definition subst_loc_in_val
-    (lo : loc_var) (ro : region_var)
-    (ln : loc_var) (rn : region_var)
-    (v0 : val) : val :=
-  match v0 with
-  | v_var _ => v0
-  | v_cloc r i l rg =>
-      v_cloc (subst_rvar ro rn r)
-             i
-             (if laddr_eq_dec (l, rg) (lo, ro) then ln else l)
-             (subst_rvar ro rn rg)
-  end.
-
-Definition subst_loc_in_bind
-    (lo : loc_var) (ro : region_var)
-    (ln : loc_var) (rn : region_var)
-    (b : term_var * ty) : term_var * ty :=
-  (fst b, subst_loc_in_ty lo ro ln rn (snd b)).
 
 Fixpoint subst_locs_in_ty
     (formals actuals : list laddr) (t : ty) : ty :=
