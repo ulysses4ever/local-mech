@@ -716,40 +716,6 @@ with pats_have_type_ind' := Induction for pats_have_type Sort Prop.
 Combined Scheme typing_mutind
   from has_type_ind', pat_has_type_ind', pats_have_type_ind'.
 
-Fixpoint expr_term_capture_safe (e : expr) : Prop :=
-  match e with
-  | e_val _ => True
-  | e_app _ _ _ => True
-  | e_datacon _ _ _ _ => True
-  | e_let _ _ e1 e2 =>
-      expr_term_capture_safe e1
-      /\ expr_term_capture_safe e2
-      /\ (forall x,
-            In x (expr_occurs_term_vars e1) ->
-            ~ In x (expr_bound_term_vars e2))
-  | e_letloc _ _ _ body => expr_term_capture_safe body
-  | e_letregion _ body => expr_term_capture_safe body
-  | e_case _ pats =>
-      let fix pats_safe (ps : list pat) : Prop :=
-        match ps with
-        | nil => True
-        | pat_clause _ _ body :: ps' =>
-            expr_term_capture_safe body /\ pats_safe ps'
-        end
-      in pats_safe pats
-  end.
-
-Definition pat_term_capture_safe (p : pat) : Prop :=
-  match p with
-  | pat_clause _ _ body => expr_term_capture_safe body
-  end.
-
-Fixpoint pats_term_capture_safe (ps : list pat) : Prop :=
-  match ps with
-  | nil => True
-  | p :: ps' => pat_term_capture_safe p /\ pats_term_capture_safe ps'
-  end.
-
 Definition gamma_binders_disjoint (G : type_env) (e : expr) : Prop :=
   forall x t, In (x, t) G -> ~ In x (expr_bound_term_vars e).
 (* The thesis treats fresh location/region binders as an implicit

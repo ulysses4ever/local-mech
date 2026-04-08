@@ -318,16 +318,6 @@ Definition loc_arg_loc_vars (loc_args : list laddr) : list loc_var :=
 Definition loc_arg_regions (loc_args : list laddr) : list region_var :=
   List.map snd loc_args.
 
-Definition ty_laddrs (t : ty) : list laddr :=
-  match t with
-  | loc_ty _ l r => [(l, r)]
-  end.
-
-(* The thesis assumes an implicit uniquify discipline:
-   all binders for values, locations, and regions are distinct.
-   We expose the corresponding binder collections here so the rest of the
-   mechanization can state that invariant explicitly when needed. *)
-
 Fixpoint pat_bound_term_vars (p : pat) : list term_var :=
   match p with
   | pat_clause _ binds body => pat_term_vars binds ++ expr_bound_term_vars body
@@ -347,52 +337,6 @@ with expr_bound_term_vars (e : expr) : list term_var :=
         match ps with
         | nil => nil
         | p :: ps' => pat_bound_term_vars p ++ go ps'
-        end
-      in go pats
-  end.
-
-Fixpoint pat_bound_laddrs (p : pat) : list laddr :=
-  match p with
-  | pat_clause _ binds body => pat_laddrs binds ++ expr_bound_laddrs body
-  end
-
-with expr_bound_laddrs (e : expr) : list laddr :=
-  match e with
-  | e_val _ => nil
-  | e_app _ _ _ => nil
-  | e_datacon _ _ _ _ => nil
-  | e_let _ _ e1 e2 =>
-      expr_bound_laddrs e1 ++ expr_bound_laddrs e2
-  | e_letloc l r _ body => (l, r) :: expr_bound_laddrs body
-  | e_letregion _ body => expr_bound_laddrs body
-  | e_case _ pats =>
-      let fix go (ps : list pat) : list laddr :=
-        match ps with
-        | nil => nil
-        | p :: ps' => pat_bound_laddrs p ++ go ps'
-        end
-      in go pats
-  end.
-
-Fixpoint pat_bound_regions (p : pat) : list region_var :=
-  match p with
-  | pat_clause _ _ body => expr_bound_regions body
-  end
-
-with expr_bound_regions (e : expr) : list region_var :=
-  match e with
-  | e_val _ => nil
-  | e_app _ _ _ => nil
-  | e_datacon _ _ _ _ => nil
-  | e_let _ _ e1 e2 =>
-      expr_bound_regions e1 ++ expr_bound_regions e2
-  | e_letloc _ _ _ body => expr_bound_regions body
-  | e_letregion r body => r :: expr_bound_regions body
-  | e_case _ pats =>
-      let fix go (ps : list pat) : list region_var :=
-        match ps with
-        | nil => nil
-        | p :: ps' => pat_bound_regions p ++ go ps'
         end
       in go pats
   end.
@@ -477,39 +421,6 @@ with expr_occurs_loc_vars (e : expr) : list loc_var :=
       in val_loc_vars v0 ++ go pats
   end.
 
-Fixpoint pat_occurs_laddrs (p : pat) : list laddr :=
-  match p with
-  | pat_clause _ binds body =>
-      pat_laddrs binds ++ expr_occurs_laddrs body
-  end
-
-with expr_occurs_laddrs (e : expr) : list laddr :=
-  match e with
-  | e_val v0 => val_symbolic_laddrs v0
-  | e_app _ locs vs =>
-      locs ++ vals_symbolic_laddrs vs
-  | e_datacon _ l r vs =>
-      (l, r) :: vals_symbolic_laddrs vs
-  | e_let _ T e1 e2 =>
-      ty_laddrs T ++ expr_occurs_laddrs e1 ++ expr_occurs_laddrs e2
-  | e_letloc l r le body =>
-      let le_laddrs :=
-        match le with
-        | LE_Start _ => nil
-        | LE_Next l0 r0 => [(l0, r0)]
-        | LE_After _ l0 r0 => [(l0, r0)]
-        end in
-      (l, r) :: le_laddrs ++ expr_occurs_laddrs body
-  | e_letregion _ body => expr_occurs_laddrs body
-  | e_case v0 pats =>
-      let fix go (ps : list pat) : list laddr :=
-        match ps with
-        | nil => nil
-        | p :: ps' => pat_occurs_laddrs p ++ go ps'
-        end
-      in val_symbolic_laddrs v0 ++ go pats
-  end.
-
 Fixpoint pat_occurs_region_vars (p : pat) : list region_var :=
   match p with
   | pat_clause _ binds body =>
@@ -538,33 +449,32 @@ with expr_occurs_region_vars (e : expr) : list region_var :=
       in val_region_vars v0 ++ go pats
   end.
 
-(* Source/runtime split, made explicit for the named mechanization:
-   the thesis source language contains only symbolic locations.  Concrete
-   locations <r,i>^(l^r) are runtime values produced by evaluation,
-   not source syntax written inside function bodies or the main term. *)
-Definition val_symbolic_only (v0 : val) : Prop :=
-  match v0 with
-  | v_var _ => True
-  | v_cloc _ _ _ _ => False
-  end.
-
-Fixpoint expr_symbolic_only (e : expr) : Prop :=
+Fixpoint expr_occurs_laddrs (e : expr) : list laddr :=
   match e with
-  | e_val v0 => val_symbolic_only v0
-  | e_app _ _ vs => Forall val_symbolic_only vs
-  | e_datacon _ _ _ vs => Forall val_symbolic_only vs
-  | e_let _ _ e1 e2 => expr_symbolic_only e1 /\ expr_symbolic_only e2
-  | e_letloc _ _ _ body => expr_symbolic_only body
-  | e_letregion _ body => expr_symbolic_only body
+  | e_val v0 => val_symbolic_laddrs v0
+  | e_app _ locs vs =>
+      locs ++ vals_symbolic_laddrs vs
+  | e_datacon _ l r vs =>
+      (l, r) :: vals_symbolic_laddrs vs
+  | e_let _ (loc_ty _ l r) e1 e2 =>
+      (l, r) :: expr_occurs_laddrs e1 ++ expr_occurs_laddrs e2
+  | e_letloc l r le body =>
+      let le_laddrs :=
+        match le with
+        | LE_Start _ => nil
+        | LE_Next l0 r0 => [(l0, r0)]
+        | LE_After _ l0 r0 => [(l0, r0)]
+        end in
+      (l, r) :: le_laddrs ++ expr_occurs_laddrs body
+  | e_letregion _ body => expr_occurs_laddrs body
   | e_case v0 pats =>
-      val_symbolic_only v0 /\
-      let fix pats_ok (ps : list pat) : Prop :=
+      let fix go (ps : list pat) : list laddr :=
         match ps with
-        | nil => True
-        | pat_clause _ _ body :: ps' =>
-            expr_symbolic_only body /\ pats_ok ps'
+        | nil => nil
+        | pat_clause _ binds body :: ps' =>
+            pat_laddrs binds ++ expr_occurs_laddrs body ++ go ps'
         end
-      in pats_ok pats
+      in val_symbolic_laddrs v0 ++ go pats
   end.
 
 Fixpoint tick_marks (n : nat) : string :=

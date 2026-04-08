@@ -2,10 +2,19 @@
 """
 find_dead_code.py — Find unused definitions and lemmata in Rocq (.v) files.
 
-A definition is considered "unused" when its name (as a word) appears exactly
-once across all source files listed in the _CoqProject — meaning the only
-occurrence is the definition itself, and the name is never referenced anywhere
-else.
+Dead-code detection uses transitive closure via a reachability graph:
+
+  1. Each tracked definition's "body" is the source text from its header up
+     to the next tracked definition's header (or end of file).
+  2. A uses-graph is built: uses[A] = set of tracked names mentioned in A's
+     body (self-references excluded).
+  3. Live roots are names that appear in the allowlist, or that are referenced
+     from text outside all definition bodies (e.g. Require/Import preambles).
+  4. All names reachable from live roots via the uses-graph are live.
+  5. Everything else is reported as dead.
+
+This means that if A is dead and B is only mentioned inside A, B is also
+reported as dead — a single-pass occurrence-count approach would miss B.
 
 Usage:
     python3 scripts/find_dead_code.py [--coqproject _CoqProject]
@@ -57,7 +66,8 @@ DEFINITION_KEYWORDS = [
     "Function",
 ]
 
-# Match an optional Local/Global/Private prefix then a keyword then the name.
+_WORD_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_']*\b")
+
 _KWDS_RE = "|".join(re.escape(k) for k in DEFINITION_KEYWORDS)
 DEF_RE = re.compile(
     r"(?:(?:Local|Global|Private)\s+)?(?:" + _KWDS_RE + r")\s+"
@@ -112,12 +122,12 @@ def read_coqproject(coqproject_path: Path) -> list[Path]:
 # Core analysis
 # ---------------------------------------------------------------------------
 
-def extract_definitions(text: str) -> list[tuple[int, str, str]]:
+def extract_definitions(text: str) -> list[tuple[int, int, str, str]]:
     """
-    Return (line_number, name, keyword) for every top-level definition in
-    *text* (which should already have comments stripped).
+    Return (char_pos, line_number, name, keyword) for every top-level
+    definition in *text* (which should already have comments stripped).
     """
-    results: list[tuple[int, str, str]] = []
+    results: list[tuple[int, int, str, str]] = []
     for m in DEF_RE.finditer(text):
         raw = m.group(0)
         # Determine which keyword matched.
@@ -129,7 +139,7 @@ def extract_definitions(text: str) -> list[tuple[int, str, str]]:
             keyword = "Definition"
         name = m.group(1)
         line_no = text[: m.start()].count("\n") + 1
-        results.append((line_no, name, keyword))
+        results.append((m.start(), line_no, name, keyword))
     return results
 
 
@@ -152,6 +162,11 @@ def find_dead_code(
     """
     Analyse all .v files listed in *coqproject* and return a list of
     potentially unused definitions as (filename, line_no, name, keyword).
+
+    Dead-code detection uses transitive closure: a definition is dead when it
+    is unreachable from any live root via the uses-graph.  Live roots are
+    names in *allowlist* and names referenced in text that lies outside all
+    tracked definition bodies (e.g. Require/Import preambles).
     Names present in *allowlist* are excluded from the result.
     """
     if allowlist is None:
@@ -161,8 +176,10 @@ def find_dead_code(
 
     # Per-file stripped text and definitions.
     file_stripped: dict[str, str] = {}
-    # name -> (short_filename, line_no, keyword)
+    # name -> (short_filename, line_no, keyword) — last writer wins for duplicates
     all_defs: dict[str, tuple[str, int, str]] = {}
+    # fname -> sorted list of (char_pos, line_no, name, keyword)
+    file_defs: dict[str, list[tuple[int, int, str, str]]] = {}
 
     for path in files:
         if not path.exists():
@@ -172,25 +189,76 @@ def find_dead_code(
         stripped = strip_comments(raw)
         fname = path.name
         file_stripped[fname] = stripped
-        for line_no, name, kw in extract_definitions(stripped):
-            # Last writer wins when names are duplicated across files —
-            # but in well-structured code this shouldn't happen.
+        defs = extract_definitions(stripped)
+        file_defs[fname] = defs
+        for _pos, line_no, name, kw in defs:
             all_defs[name] = (fname, line_no, kw)
 
-    # Build a single corpus for occurrence counting.
-    corpus = "\n".join(file_stripped.values())
+    all_names: set[str] = set(all_defs.keys())
 
+    # -----------------------------------------------------------------
+    # Build body texts and collect external (non-definition) text.
+    #
+    # Each definition's "body" spans from its header to the start of the
+    # next definition in the same file, or to the end of the file.
+    # Text that precedes the first definition in a file is "external"
+    # (Require, Import, Section headers, etc.).
+    # -----------------------------------------------------------------
+    body_texts: dict[str, str] = {}
+    external_parts: list[str] = []
+
+    for fname, stripped in file_stripped.items():
+        defs = file_defs.get(fname, [])
+        if not defs:
+            external_parts.append(stripped)
+            continue
+        external_parts.append(stripped[: defs[0][0]])
+        for i, (pos, _line_no, name, _kw) in enumerate(defs):
+            end = defs[i + 1][0] if i + 1 < len(defs) else len(stripped)
+            body_texts[name] = stripped[pos:end]
+
+    external_text = "\n".join(external_parts)
+
+    # -----------------------------------------------------------------
+    # Build uses-graph: uses[A] = set of tracked names A's body mentions
+    # (self-references excluded; they do not affect reachability).
+    # -----------------------------------------------------------------
+    uses: dict[str, set[str]] = {}
+    for name, body in body_texts.items():
+        words = set(_WORD_RE.findall(body))
+        uses[name] = (words & all_names) - {name}
+
+    # -----------------------------------------------------------------
+    # BFS from live roots to determine all live (reachable) names.
+    #
+    # Live roots:
+    #   1. Names in the allowlist.
+    #   2. Names referenced from external text (outside any definition body).
+    # -----------------------------------------------------------------
+    external_refs = set(_WORD_RE.findall(external_text)) & all_names
+    live: set[str] = (allowlist & all_names) | external_refs
+    queue: list[str] = list(live)
+    while queue:
+        current = queue.pop()
+        for dep in uses.get(current, ()):
+            if dep not in live:
+                live.add(dep)
+                queue.append(dep)
+
+    # -----------------------------------------------------------------
+    # Report dead = tracked names not reachable from any live root.
+    # -----------------------------------------------------------------
     dead: list[tuple[str, int, str, str]] = []
     for name, (fname, line_no, kw) in all_defs.items():
         if name in allowlist:
             if verbose:
                 print(f"  {fname}:{line_no} {kw} {name!r:40s}  (allowlisted)")
             continue
-        occurrences = len(re.findall(r"\b" + re.escape(name) + r"\b", corpus))
+        is_dead = name not in live
         if verbose:
-            print(f"  {fname}:{line_no} {kw} {name!r:40s}  ({occurrences} occurrence(s))")
-        # 1 means the definition line only — never referenced elsewhere.
-        if occurrences == 1:
+            status = "DEAD" if is_dead else "live"
+            print(f"  {fname}:{line_no} {kw} {name!r:40s}  ({status})")
+        if is_dead:
             dead.append((fname, line_no, name, kw))
 
     return dead
