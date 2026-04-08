@@ -199,6 +199,17 @@ Definition nursery_locmap_injective
     lookup_loc M lr1 = Some cl ->
     lookup_loc M lr2 = Some cl ->
     lr1 = lr2.
+
+Lemma lookup_datacon_In : forall DI K info,
+  lookup_datacon DI K = Some info -> In (K, info) DI.
+Proof.
+  induction DI as [|[K' info'] DI' IH]; intros; simpl in *.
+  - discriminate.
+  - destruct (datacon_eq_dec K K').
+    + inversion H; subst. left; reflexivity.
+    + right. apply IH. assumption.
+Qed.
+
 Lemma In_find_matching_pat : forall K pats binds body,
   In (pat_clause K binds body) pats ->
   exists binds' body',
@@ -3669,6 +3680,127 @@ Theorem progress :
     \/ (exists S' M' e', step FDs DI S M e S' M' e').
 Proof.
   intros. eapply progress_gen; eassumption || reflexivity.
+Qed.
+
+Lemma lookup_fdecl_In :
+  forall FDs f fd,
+    lookup_fdecl FDs f = Some fd ->
+    In fd FDs.
+Proof.
+  induction FDs as [| fd0 FDs' IH]; intros f fd Hlk; simpl in Hlk.
+  - discriminate.
+  - destruct fd0 as [f0 l0 p0 t0 rg0 b0].
+    destruct (fun_var_eq_dec f f0).
+    + inversion Hlk; subst. left. reflexivity.
+    + right. eapply IH. exact Hlk.
+Qed.
+
+Lemma nodup_pat_term_vars_head_miss :
+  forall x ty binds,
+    NoDup (pat_term_vars ((x, ty) :: binds)) ->
+    existsb
+      (fun b => if term_var_eq_dec x (fst b) then true else false)
+      binds = false.
+Proof.
+  intros x ty binds Hnd.
+  destruct
+    (existsb
+       (fun b => if term_var_eq_dec x (fst b) then true else false)
+       binds) eqn:Hex; auto.
+  exfalso.
+  apply existsb_bind_hit in Hex as [t Hin].
+  inversion Hnd; subst.
+  apply H1.
+  change (In x (pat_term_vars binds)).
+  eapply in_map with (f := fst) in Hin.
+  exact Hin.
+Qed.
+
+Lemma substitution_val_prefix :
+  forall FDs DI prefix Gamma x vty Sigma C A N A' N' e T v0,
+    has_type FDs DI ((prefix ++ (x, vty) :: Gamma)%list) Sigma C A N A' N' e T ->
+    lookup_tenv prefix x = None ->
+    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A N (e_val v0) vty ->
+    (forall y, In y (val_term_vars v0) -> ~ In y (expr_bound_term_vars e)) ->
+    has_type FDs DI (prefix ++ Gamma)%list Sigma C A N A' N' (subst_val x v0 e) T.
+Proof.
+  intros FDs DI prefix Gamma x vty Sigma C A N A' N' e T v0 HT Hnone Hs Hfresh.
+  destruct substitution_val_mutual as [Hex _].
+  eapply Hex with (prefix := prefix) (z := x) (uty := vty) (Gamma := Gamma) (s := v0); eauto.
+Qed.
+
+Lemma subst_case_bindings :
+  forall FDs DI G Sigma0 C A N Aout Nout rc binds indices body T,
+    NoDup (pat_term_vars binds) ->
+    List.length binds = List.length indices ->
+    has_type FDs DI (extend_tenv_list G binds)
+             (extend_store_list Sigma0 (pat_store_entries binds))
+             C A N Aout Nout body T ->
+    has_type FDs DI G
+             (extend_store_list Sigma0 (pat_store_entries binds))
+             C A N Aout Nout
+             (subst_vals (pat_term_vars binds) (build_cloc_vals rc binds indices) body) T.
+Proof.
+  intros FDs DI G Sigma0 C A N Aout Nout rc binds indices body T Hnd Hlen Hty.
+  revert G Sigma0 indices body T Hnd Hlen Hty.
+  induction binds as [| [x [tc l r]] binds IH];
+    intros G Sigma0 indices body T Hnd Hlen Hty; simpl in *.
+  - destruct indices; simpl in *.
+    + exact Hty.
+    + discriminate.
+  - destruct indices as [| i indices].
+    + discriminate.
+    + inversion Hnd as [| x0 xs Hnotin Hnd_tail]; subst.
+      inversion Hlen; subst.
+      rewrite extend_tenv_list_rev in Hty.
+      simpl in Hty.
+      assert (Hmiss :
+        existsb
+          (fun b => if term_var_eq_dec x (fst b) then true else false)
+          binds = false).
+      { eapply (nodup_pat_term_vars_head_miss x (LocTy tc l r) binds).
+        exact Hnd. }
+      assert (Hnone :
+        lookup_tenv (rev binds) x = None).
+      { replace (rev binds) with ((rev binds ++ [])%list) by (rewrite app_nil_r; reflexivity).
+        rewrite <- extend_tenv_list_rev.
+        eapply lookup_tenv_extend_tenv_list_miss.
+        - reflexivity.
+        - exact Hmiss. }
+      assert (Hval :
+        has_type FDs DI ((rev binds ++ G)%list)
+                 (extend_store_list Sigma0 (pat_store_entries ((x, LocTy tc l r) :: binds)))
+                 C A N A N (e_val (v_cloc rc i l r)) (LocTy tc l r)).
+      { apply T_ConcreteLoc.
+        simpl.
+        eapply in_extend_store_list.
+        simpl. left. reflexivity.
+      }
+      assert (Hsub :
+        has_type FDs DI ((rev binds ++ G)%list)
+                 (extend_store_list Sigma0 (pat_store_entries ((x, LocTy tc l r) :: binds)))
+                 C A N Aout Nout
+                 (subst_val x (v_cloc rc i l r) body) T).
+      { eapply substitution_val_prefix.
+        - exact Hty.
+        - exact Hnone.
+        - exact Hval.
+        - intros y Hy. inversion Hy.
+      }
+      simpl in Hsub.
+      simpl.
+      replace
+        (extend_store_list Sigma0 (pat_store_entries ((x, LocTy tc l r) :: binds)))
+        with
+        (extend_store_list (((l, r), tc) :: Sigma0) (pat_store_entries binds))
+        in Hsub
+        by reflexivity.
+      replace (rev binds ++ G)%list with (extend_tenv_list G binds) in Hsub.
+      2:{ rewrite extend_tenv_list_rev. reflexivity. }
+      exact
+        (IH G (((l, r), tc) :: Sigma0) indices
+            (subst_val x (v_cloc rc i l r) body) T
+            Hnd_tail H0 Hsub).
 Qed.
 
 (* ================================================================= *)
